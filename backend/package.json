@@ -1,0 +1,37 @@
+{
+  "name": "godhara-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "bwip-js": "^4.11.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "express-session": "^1.19.0",
+    "google-auth-library": "^10.6.2",
+    "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^8.0.9",
+    "pdfkit": "^0.18.0",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/bwip-js": "^3.2.3",
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.19.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^22.14.0",
+    "@types/nodemailer": "^8.0.0",
+    "@types/pdfkit": "^0.17.6",
+    "@types/pg": "^8.20.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2"
+  }
+}
