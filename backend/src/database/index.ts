@@ -211,7 +211,7 @@ export async function loadFromPostgres() {
     } else {
       data.settings = {
         storeName: 'Godhara',
-        logoUrl: '/assets/logo.png',
+        logoUrl: '/logo.png',
         founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
         founderName: 'Kalyan V., Founder of Godhara',
         founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
@@ -717,7 +717,7 @@ async function startupInit() {
           ],
           settings: {
             storeName: 'Godhara',
-            logoUrl: '/assets/logo.png',
+            logoUrl: '/logo.png',
             founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
             founderName: 'Kalyan V., Founder of Godhara',
             founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
@@ -903,7 +903,7 @@ async function startupInit() {
           ],
           settings: {
             storeName: 'Godhara',
-            logoUrl: '/assets/logo.png',
+            logoUrl: '/logo.png',
             founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
             founderName: 'Kalyan V., Founder of Godhara',
             founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
