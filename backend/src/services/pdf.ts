@@ -40,33 +40,26 @@ async function generateBarcodeBuffer(text: string): Promise<Buffer> {
 
 // Helper to retrieve the official company brand logo image path
 function getCompanyLogoPath(): string | null {
-  const primaryPath = path.join(process.cwd(), 'assets', 'logo.png');
-  if (fs.existsSync(primaryPath)) {
-    console.log(`[PDF Generator] Loaded company logo image from: ${primaryPath}`);
-    return primaryPath;
+  const logoPath = path.join(process.cwd(), 'public', 'logo.png');
+
+  if (fs.existsSync(logoPath)) {
+    console.log(`[PDF Generator] Loaded company logo image from: ${logoPath}`);
+    return logoPath;
   }
-  
-  // Optional secondary fallback check
-  const fallbackPath = path.join(process.cwd(), 'public', 'logo.png');
-  if (fs.existsSync(fallbackPath)) {
-    console.log(`[PDF Generator] Loaded company logo image from fallback: ${fallbackPath}`);
-    return fallbackPath;
-  }
-  
-  console.warn('[PDF Generator] Warning: No company logo found on disk at assets/logo.png or public/logo.png.');
+
+  console.warn('[PDF Generator] Warning: No company logo found at public/logo.png.');
   return null;
 }
-
-// Ensure the assets folder and a high-resolution elegant transparent brand logo exist
 const ASSETS_DIR = path.join(process.cwd(), 'assets');
+
 if (!fs.existsSync(ASSETS_DIR)) {
   fs.mkdirSync(ASSETS_DIR, { recursive: true });
 }
 
 const defaultLogoPath = path.join(ASSETS_DIR, 'logo.png');
+
 if (!fs.existsSync(defaultLogoPath)) {
-  // A clean, high-contrast brand fallback PNG image (elegant circular orange logo representational buffer)
-  const defaultPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAMAAAApuvgYAAAAMFBMVEVYSIUAtbUAsbFArKwAta0Ata0Ata0Ata0Ata0AtK0Ata0Ata0Ata0Ata0Ata0AsLC7eX96AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAWklEQVRIx+WVyQ7AIBBDicZl///ZWeI0HkY8oEoqVfI8tG386gS7i3K902tS2U7O6N4yYgWjW3FCI9bV2hEjmK3FmSNAZoyUODWOmHOnb417f7P07v4Wf37S3gNRAAYFAg49BwAAAABJRU5ErkJggg==';
+  const defaultPngBase64 = '...';
   try {
     fs.writeFileSync(defaultLogoPath, Buffer.from(defaultPngBase64, 'base64'));
     console.log('[PDF Generator] Successfully initialized default company logo PNG under "assets/logo.png"');
@@ -74,7 +67,6 @@ if (!fs.existsSync(defaultLogoPath)) {
     console.error('[PDF Generator] Failed to initialize default company logo file assets/logo.png:', err);
   }
 }
-
 // Generate a Tax Invoice PDF
 export async function generateInvoicePDF(order: any): Promise<string> {
   return new Promise((resolve, reject) => {
