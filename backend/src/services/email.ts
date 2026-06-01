@@ -98,7 +98,7 @@ function queueEmail(to: string, type: string, mailOptions: any) {
 // Global styles definitions
 const brandHeaderHtml = `
   <div style="text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 20px; margin-bottom: 25px;">
-    <img src="${process.env.APP_URL || 'https://ais-pre-rrzntfsabmfugtt3vcxkg2-115919430620.asia-east1.run.app'}/assets/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
+    <img src="${process.env.APP_URL || 'https://ais-pre-rrzntfsabmfugtt3vcxkg2-115919430620.asia-east1.run.app'}/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
     <h1 style="color: #6B2D0E; font-size: 26px; margin: 0 0 5px 0; font-family: 'Georgia', serif; font-weight: bold;">గోధార - Godhara</h1>
     <p style="margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #E8820C; font-weight: bold;">Traditional Ayurvedic Purities & Gau Seva</p>
   </div>
