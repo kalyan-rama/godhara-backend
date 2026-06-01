@@ -98,7 +98,7 @@ function queueEmail(to: string, type: string, mailOptions: any) {
 // Global styles definitions
 const brandHeaderHtml = `
   <div style="text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 20px; margin-bottom: 25px;">
-    <img src="${process.env.APP_URL || 'https://ais-pre-rrzntfsabmfugtt3vcxkg2-115919430620.asia-east1.run.app'}/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
+    <img src="${process.env.APP_URL || 'https://ais-pre-rrzntfsabmfugtt3vcxkg2-115919430620.asia-east1.run.app'}/assets/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
     <h1 style="color: #6B2D0E; font-size: 26px; margin: 0 0 5px 0; font-family: 'Georgia', serif; font-weight: bold;">గోధార - Godhara</h1>
     <p style="margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #E8820C; font-weight: bold;">Traditional Ayurvedic Purities & Gau Seva</p>
   </div>
@@ -268,6 +268,32 @@ export async function sendAccountLockedEmail(email: string, name: string) {
     from: '"Godhara Security" <support@godhara.com>',
     to: email,
     subject: 'Security Notice: Account Temporarily Lockout Activated',
+    html,
+  });
+}
+
+// 7. OTP DISPATCH EMAIL
+export async function sendOTPEmail(email: string, name: string, otp: string) {
+  const html = `
+    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+      ${brandHeaderHtml}
+      <p style="font-size: 16px; line-height: 1.6; margin-top: 0;">Hare Krishna / Greetings <strong>${name}</strong>,</p>
+      <p style="font-size: 14px; line-height: 1.6;">Your secure single-use One-Time Passcode (OTP) is shown below. This code is valid for exactly <strong>5 minutes</strong> and will expire afterwards.</p>
+      
+      <div style="text-align: center; margin: 30px 0; background-color: #FAF2E8; padding: 20px; border-radius: 8px; border: 1px dashed #D4B896;">
+        <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #6B2D0E; font-family: monospace;">${otp}</span>
+      </div>
+
+      <p style="font-size: 12px; color: #E8820C; text-align: center; font-weight: bold;">⚠️ For security, never share this passcode with anyone.</p>
+      <p style="font-size: 11px; color: #888; text-align: center; margin-top: 15px;">If you did not request this OTP, please secure your login credentials immediately.</p>
+      ${brandFooterHtml}
+    </div>
+  `;
+
+  queueEmail(email, 'Email OTP Code', {
+    from: '"Godhara Security" <support@godhara.com>',
+    to: email,
+    subject: `Your Secure Login Passcode: ${otp} - Godhara`,
     html,
   });
 }
