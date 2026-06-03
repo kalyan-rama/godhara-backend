@@ -5,7 +5,6 @@ import express from 'express';
 import session from 'express-session';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './routes/index.js';
 import { dbInitializationPromise, reloadCache, getPendingFlushPromise } from './database/index.js';
 
@@ -136,12 +135,17 @@ async function startServer() {
 
   // Vite middleware integration for asset pipelines
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-    console.log('⚡ Running development server with active Vite middleware');
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+      console.log('⚡ Running development server with active Vite middleware');
+    } catch (err: any) {
+      console.error('❌ Failed to integrate Vite development middleware:', err?.message || err);
+    }
   } else {
     // Production serving from client dist directory
     const distPath = path.join(process.cwd(), 'dist');
