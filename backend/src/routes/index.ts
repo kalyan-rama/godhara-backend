@@ -74,13 +74,15 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    console.warn('[Auth Decision Log] Authentication failed: No token or session found. Denying with 403 Forbidden.');
+    const reason = 'No Bearer token or session user exists on headers / cookies';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Authentication required. Forbidden.', error: 'UNAUTHENTICATED' });
   }
 
   jwt.verify(token, JWT_SECRET, (err, userPayload: any) => {
     if (err) {
-      console.error('[Auth Decision Log] JWT Signature/Expiry verification failed:', err.message);
+      const reason = `JWT verification failed: ${err.message}`;
+      console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
       return res.status(403).json({ message: 'Invalid or expired signature', error: err.message });
     }
     
@@ -110,10 +112,21 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
 
 // SECURE RBAC MIDDLEWARE
 export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
-  if (!req.user || !['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(req.user.role)) {
-    return res.status(403).json({ message: 'Access denied: Admin panel privileges required' });
+  const currentRoute = req.originalUrl || req.url;
+  const user = req.user;
+  const sessionUser = (req.session as any)?.user;
+
+  console.log(`[Admin Role Authorization Check] Route: "${currentRoute}", UserID: "${user?.id || 'N/A'}", Email: "${user?.email || 'N/A'}", Role: "${user?.role || 'N/A'}", OTP_Verified: "${user?.otpVerified ?? 'N/A'}"`);
+  console.log(`[Admin Role Authorization Check] Session details: UserID: "${sessionUser?.id || 'N/A'}", Email: "${sessionUser?.email || 'N/A'}", Role: "${sessionUser?.role || 'N/A'}", OTP_Verified: "${sessionUser?.otpVerified ?? 'N/A'}"`);
+
+  if (!user || !['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role)) {
+    const reason = 'User role is not an authorized administrative role (SUPER_ADMIN, ADMIN, MODERATOR, VIEWER)';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user?.id || 'N/A'}", Email: "${user?.email || 'N/A'}", Role: "${user?.role || 'N/A'}", OTP_Verified: "${user?.otpVerified ?? 'N/A'}", Denial Reason: "${reason}"`);
+    return res.status(403).json({ message: 'Access denied: Admin panel privileges required', error: 'UNAUTHORIZED_ROLE' });
   }
-  if (!req.user.otpVerified) {
+  if (!user.otpVerified) {
+    const reason = 'OTP is not verified for this administrative session';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "false", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Access denied: OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
   }
   next();
@@ -121,12 +134,22 @@ export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction
 
 // REQUIRE OTP VERIFIED MIDDLEWARE FOR ADMINS
 export function requireAdminOTPVerified(req: AuthRequest, res: Response, next: NextFunction) {
-  if (!req.user) {
+  const currentRoute = req.originalUrl || req.url;
+  const user = req.user;
+  const sessionUser = (req.session as any)?.user;
+
+  console.log(`[Admin OTP Authorization Check] Route: "${currentRoute}", UserID: "${user?.id || 'N/A'}", Email: "${user?.email || 'N/A'}", Role: "${user?.role || 'N/A'}", OTP_Verified: "${user?.otpVerified ?? 'N/A'}"`);
+  console.log(`[Admin OTP Authorization Check] Session details: UserID: "${sessionUser?.id || 'N/A'}", Email: "${sessionUser?.email || 'N/A'}", Role: "${sessionUser?.role || 'N/A'}", OTP_Verified: "${sessionUser?.otpVerified ?? 'N/A'}"`);
+
+  if (!user) {
+    const reason = 'Authentication required but no active user session or credentials payload found on request';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Authentication required. Access denied.', error: 'UNAUTHENTICATED' });
   }
-  const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(req.user.role);
-  if (isAdminRole && !req.user.otpVerified) {
-    console.warn(`[OTP SECURITY] Admin user ${req.user.email} attempted administrative access without verified OTP. ACCESS DENIED.`);
+  const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
+  if (isAdminRole && !user.otpVerified) {
+    const reason = 'Admin user requires multi-factor OTP verification for dashboard/administrative path access';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "false", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Access denied: OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
   }
   next();
@@ -134,22 +157,33 @@ export function requireAdminOTPVerified(req: AuthRequest, res: Response, next: N
 
 // PROTECT ADMIN WRITE REQUESTS PER-ROLE CODE
 export function checkWritePermissions(req: AuthRequest, res: Response, next: NextFunction) {
-  if (!req.user) return res.status(401).json({ message: 'Authentication required' });
+  const currentRoute = req.originalUrl || req.url;
+  const user = req.user;
+
+  if (!user) {
+    const reason = 'Authentication required for administrative operations check';
+    console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${currentRoute}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
+    return res.status(401).json({ message: 'Authentication required' });
+  }
   
-  const role = req.user.role;
+  const role = user.role;
   const method = req.method;
 
   // VIEWER blocks all write operations (only GET routes allowed)
   if (role === 'VIEWER' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    const reason = 'Viewer role is forbidden from making data modifications (POST, PUT, PATCH, DELETE)';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "${user.otpVerified ?? 'false'}", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Access denied: Read-only Viewer permissions. No modifications allowed.' });
   }
 
   // MODERATOR can view details/logs and BAN/UNBAN users but CANNOT edit settings, catalog, or configs
-  const isUserBanRequest = req.path.includes('/admin/users/') && (req.path.endsWith('/ban') || req.path.endsWith('/unban'));
-  const isForceReset = req.path.includes('/admin/users/') && req.path.endsWith('/force-reset');
+  const isUserBanRequest = req.path.includes('/users/') && (req.path.endsWith('/ban') || req.path.endsWith('/unban'));
+  const isForceReset = req.path.includes('/users/') && req.path.endsWith('/force-reset');
   const isAllowedModeratorWrite = isUserBanRequest || isForceReset;
 
   if (role === 'MODERATOR' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !isAllowedModeratorWrite) {
+    const reason = 'Moderator role is restricted from editing settings, products, coupons or configurations (allowed only is BAN, UNBAN, FORCE-RESET)';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "${user.otpVerified ?? 'false'}", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Access denied: Moderator permissions allow user status adjustments only. Unable to modify products, covenants, settings, or coupons.' });
   }
 
@@ -801,6 +835,8 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
         return res.status(403).send('<h2>Your account is banned by administrators</h2>');
       }
 
+      console.log(`[Google OAuth Account Merging] Existing user found for email "${email}". Reusing existing account with User ID: "${user.id}". Preserved Role in Database: "${user.role}"`);
+
       const updates: any = {};
       if (!user.googleId) updates.googleId = googleId;
       if (!user.googleAvatar) updates.googleAvatar = picture;
@@ -1005,6 +1041,8 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
       if (user.isBanned) {
         return res.status(403).json({ message: 'This account has been suspended by an administrator.' });
       }
+
+      console.log(`[Google Direct Token Merging] Existing user found for email "${email}". Reusing existing account with User ID: "${user.id}". Preserved Role in Database: "${user.role}"`);
 
       const updates: any = {};
       if (!user.googleId) updates.googleId = googleId;
@@ -1877,7 +1915,10 @@ apiRouter.get('/orders/:id', authenticateToken, (req: AuthRequest, res) => {
   }
 
   // Customers can only see their own orders unless they are administrators
-  if (req.user!.role !== 'ADMIN' && order.userId !== req.user!.id) {
+  const hasAdminOrderPrivileges = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(req.user!.role);
+  if (!hasAdminOrderPrivileges && order.userId !== req.user!.id) {
+    const reason = 'Access denied to order context. Resource belongs to another session and caller has no administrative privileges.';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "/orders/${req.params.id}", UserID: "${req.user!.id}", Email: "${req.user!.email}", Role: "${req.user!.role}", OTP_Verified: "${req.user!.otpVerified ?? 'false'}", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Access denied: Resource belongs to another session' });
   }
 
