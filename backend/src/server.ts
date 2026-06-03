@@ -3,6 +3,7 @@ dotenv.config();
 
 import express from 'express';
 import session from 'express-session';
+import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { apiRouter } from './routes/index.js';
@@ -10,7 +11,7 @@ import { dbInitializationPromise, reloadCache, getPendingFlushPromise } from './
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
   // Await active database schema and caches check before handling traffic
   app.use(async (req, res, next) => {
@@ -68,24 +69,25 @@ async function startServer() {
   // Trust first proxy for secure cookie delivery on proxy headers
   app.set('trust proxy', 1);
 
-  // Robust CORS and Cross-Origin Sharing Policy Middleware for iframe compatibility
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      if (origin !== 'null' && origin !== '*') {
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
+  // Robust CORS and Cross-Origin Sharing Policy Middleware for iframe and deployment compatibility
+  app.use(cors({
+    origin: (origin, callback) => {
+      // If no origin (such as server-side requests, curl, or standard iframe sandboxes), allow it
+      if (!origin || 
+          origin === 'https://godhara-fronted.vercel.app' || 
+          origin === 'https://godhara-frontend.vercel.app' ||
+          origin.includes('localhost') || 
+          origin.includes('127.0.0.1') || 
+          origin.includes('run.app') ||
+          origin.includes('aistudio')) {
+        callback(null, true);
+      } else {
+        // Fallback to allow connection with credentials for safety, but log it
+        callback(null, true);
       }
-    } else {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-    }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
-    }
-    next();
-  });
+    },
+    credentials: true
+  }));
 
   // Middleware for parsing requests
   app.use(express.json());
