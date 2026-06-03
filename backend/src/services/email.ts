@@ -1,95 +1,7 @@
-import nodemailer from 'nodemailer';
 import fs from 'fs';
 import path from 'path';
-import dns from 'dns';
 
-let transporterInstance: nodemailer.Transporter | null = null;
-
-async function getTransporter(): Promise<nodemailer.Transporter | null> {
-  if (transporterInstance) return transporterInstance;
-
-  const originalHost = process.env.SMTP_HOST || 'smtp.gmail.com';
-  const port = parseInt(process.env.SMTP_PORT || '587');
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-
-  if (!user || !pass) {
-    console.warn('⚠️ SMTP mail credentials (SMTP_USER/SMTP_PASS) are missing. Emails will fall back to local print logger mode.');
-    return null;
-  }
-
-  let lastError: any = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      console.log(`📡 [SMTP INIT] Attempt ${attempt}/3: Resolving IPv4 and establishing connection to ${originalHost}:${port}...`);
-      
-      let host = originalHost;
-      if (originalHost === 'smtp.gmail.com' || originalHost.includes('gmail')) {
-        try {
-          console.log(`🔍 [DNS RESOLVE] Resolving IPv4 for ${originalHost}...`);
-          const addresses = await dns.promises.resolve4(originalHost);
-          if (addresses && addresses.length > 0) {
-            host = addresses[0];
-            console.log(`🔍 [DNS RESOLVE] Successfully resolved ${originalHost} to IPv4: ${host}`);
-          }
-        } catch (dnsErr: any) {
-          console.warn(`⚠️ [DNS RESOLVE WARNING] DNS resolve4 failed for ${originalHost}: ${dnsErr.message}. Falling back to default host resolution.`);
-        }
-      }
-
-      const transportOptions: any = {
-        host,
-        port,
-        secure: port === 465,
-        auth: {
-          user,
-          pass,
-        },
-        family: 4, // Force Node.js/Nodemailer to use IPv4 only
-        connectionTimeout: 60000,
-        greetingTimeout: 60000,
-        socketTimeout: 60000,
-      };
-
-      // If we resolved host to an IP, configure tls servername matching to prevent certificate rejection
-      if (host !== originalHost) {
-        transportOptions.tls = {
-          servername: originalHost,
-          rejectUnauthorized: false
-        };
-      }
-
-      console.log(`📨 [SMTP CREATE] Creating transporter with Options: host=${host}, port=${port}, family=4`);
-      const tempTransporter = nodemailer.createTransport(transportOptions);
-
-      // Verify connection immediately with a Promise wrapper
-      console.log(`⏳ [SMTP VERIFY] Verifying connection for attempt ${attempt}/3...`);
-      await new Promise<void>((resolve, reject) => {
-        tempTransporter.verify((err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
-      console.log(`✅ [SMTP VERIFY SUCCESS] Connected and authenticated successfully to ${originalHost} (${host}):${port} using user: ${user}`);
-      transporterInstance = tempTransporter;
-      return transporterInstance;
-    } catch (err: any) {
-      lastError = err;
-      console.error(`❌ [SMTP INIT ERROR] Attempt ${attempt}/3 failed. Error Code: ${err.code || 'UNKNOWN'}, Message: ${err.message}`);
-      if (attempt < 3) {
-        const delay = attempt * 2000;
-        console.log(`⏳ [SMTP RETRY] Waiting ${delay}ms before retrying SMTP initialization...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  console.error(`🚨 [SMTP CRITICAL FAILURE] All 3 SMTP connection attempts failed. Last Error: ${lastError?.message}`);
-  return null;
-}
-
-// Background Queue Simulator (Matches scaling / BullMQ requirements safely in-memory with automated retry exponential backoff!)
+// Background Queue Simulator (for standard transactional tasks with automated retry & exponential backoff)
 export const emailDispatchQueue: Array<{
   id: string;
   to: string;
@@ -100,33 +12,89 @@ export const emailDispatchQueue: Array<{
   error?: string;
 }> = [];
 
+// Helper to determine from address dynamically
+function getFromAddress(): string {
+  return process.env.FROM_EMAIL || 'Godhara <onboarding@resend.dev>';
+}
+
+// Resend HTTP API Client implementation using native global fetch
+async function sendViaResend(payload: {
+  from: string;
+  to: string | string[];
+  subject: string;
+  html: string;
+  attachments?: Array<{ filename: string; content: string }>;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    console.log(`📬 [RESEND LOG FALLBACK] No RESEND_API_KEY defined. Simulating delivery:`);
+    console.log(`- From: ${payload.from}`);
+    console.log(`- To: ${Array.isArray(payload.to) ? payload.to.join(', ') : payload.to}`);
+    console.log(`- Subject: ${payload.subject}`);
+    return { id: `simulated-${Date.now()}` };
+  }
+
+  const resendUrl = 'https://api.resend.com/emails';
+  const recipientList = Array.isArray(payload.to) ? payload.to : [payload.to];
+  const formattedRecipients = recipientList.map(r => r.trim().toLowerCase());
+
+  const body = {
+    from: payload.from,
+    to: formattedRecipients,
+    subject: payload.subject,
+    html: payload.html,
+    attachments: payload.attachments || []
+  };
+
+  console.log(`📨 [RESEND API] Delivering email down channel to: ${formattedRecipients.join(', ')}...`);
+
+  // Using Node 18+ global fetch
+  const response = await fetch(resendUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    let errMessage = responseText;
+    try {
+      const parsed = JSON.parse(responseText);
+      errMessage = parsed.message || JSON.stringify(parsed);
+    } catch {}
+    throw new Error(`Resend API error (Status ${response.status}): ${errMessage}`);
+  }
+
+  try {
+    const data = JSON.parse(responseText);
+    console.log(`✅ [RESEND SUCCESS] Email delivered successfully. ID: ${data.id}`);
+    return data;
+  } catch {
+    console.log(`✅ [RESEND SUCCESS] Email delivered. Response length: ${responseText.length}`);
+    return { id: `unknown-${Date.now()}` };
+  }
+}
+
 async function triggerBackgroundEmailWorker() {
   const pending = emailDispatchQueue.find(j => j.status === 'PENDING' && j.attempts < 3);
   if (!pending) return;
 
   pending.attempts++;
-  const transporter = await getTransporter();
-
-  if (!transporter) {
-    console.log(`📬 [SMTP QUEUE EMULATOR] ${pending.type} to ${pending.to} [Attempt ${pending.attempts}/3]:`);
-    console.log(`- Subject: ${pending.mailOptions.subject}`);
-    pending.status = 'SENT';
-    // Trigger next job asynchronously
-    setTimeout(triggerBackgroundEmailWorker, 100);
-    return;
-  }
 
   try {
-    const info = await transporter.sendMail(pending.mailOptions);
-    console.log(`📨 [SMTP QUEUE] successfully sent ${pending.type} inside worker to ${pending.to}: ${info.messageId}`);
+    const res = await sendViaResend(pending.mailOptions);
+    console.log(`📨 [RESEND QUEUE] Successfully sent "${pending.type}" inside worker to ${pending.to}. ID:`, res?.id);
     pending.status = 'SENT';
   } catch (err: any) {
-    console.error(`❌ [SMTP QUEUE] send failed on attempt ${pending.attempts}: ${err.message}`);
+    console.error(`❌ [RESEND QUEUE] Dispatch failed on attempt ${pending.attempts}: ${err.message}`);
     if (pending.attempts >= 3) {
       pending.status = 'FAILED';
       pending.error = err.message;
     } else {
-      // Retry in background with exponential backoff
+      // Retry with backoff
       const retryMs = pending.attempts === 1 ? 5000 : 30000;
       setTimeout(() => {
         pending.status = 'PENDING';
@@ -135,7 +103,7 @@ async function triggerBackgroundEmailWorker() {
     }
   }
 
-  // Chain to next jobs
+  // Next job in pipeline
   setTimeout(triggerBackgroundEmailWorker, 100);
 }
 
@@ -149,15 +117,14 @@ function queueEmail(to: string, type: string, mailOptions: any) {
     attempts: 0,
     status: 'PENDING'
   });
-  // Trigger background execution loop immediately Async
   setTimeout(triggerBackgroundEmailWorker, 1);
   return jobId;
 }
 
-// Global styles definitions
+// Global brand elements referencing process.env dynamically to avoid any hardcoded fallback domains
 const brandHeaderHtml = `
   <div style="text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 20px; margin-bottom: 25px;">
-    <img src="${process.env.APP_URL || 'https://ais-pre-rrzntfsabmfugtt3vcxkg2-115919430620.asia-east1.run.app'}/assets/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
+    <img src="${process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000'}/assets/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
     <h1 style="color: #6B2D0E; font-size: 26px; margin: 0 0 5px 0; font-family: 'Georgia', serif; font-weight: bold;">గోధార - Godhara</h1>
     <p style="margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #E8820C; font-weight: bold;">Traditional Ayurvedic Purities & Gau Seva</p>
   </div>
@@ -177,7 +144,7 @@ const brandFooterHtml = `
 
 // 1. CONFIRM EMAIL VERIFICATION
 export async function sendEmailVerification(email: string, name: string, token: string) {
-  const currentAppUrl = process.env.APP_URL || 'http://localhost:3000';
+  const currentAppUrl = process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000';
   const verifyLink = `${currentAppUrl}/verify-email?token=${token}`;
 
   const html = `
@@ -196,7 +163,7 @@ export async function sendEmailVerification(email: string, name: string, token: 
   `;
 
   queueEmail(email, 'Email Verification', {
-    from: '"Godhara Traditional" <support@godhara.com>',
+    from: getFromAddress(),
     to: email,
     subject: 'Confirm Your Email Address - Godhara Traditional',
     html,
@@ -221,7 +188,7 @@ export async function sendWelcomeEmail(email: string, name: string) {
   `;
 
   queueEmail(email, 'Welcome Email', {
-    from: '"Godhara Traditional" <support@godhara.com>',
+    from: getFromAddress(),
     to: email,
     subject: 'Welcome to Godhara Circle! Your traditional account is active',
     html,
@@ -230,7 +197,7 @@ export async function sendWelcomeEmail(email: string, name: string) {
 
 // 3. SECURE PASSWORD RESET REQUEST EMAIL
 export async function sendPasswordResetEmail(email: string, name: string, token: string) {
-  const currentAppUrl = process.env.APP_URL || 'http://localhost:3000';
+  const currentAppUrl = process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000';
   const resetLink = `${currentAppUrl}/reset-password?token=${token}`;
 
   const html = `
@@ -250,7 +217,7 @@ export async function sendPasswordResetEmail(email: string, name: string, token:
   `;
 
   queueEmail(email, 'Password Reset', {
-    from: '"Godhara Traditional" <support@godhara.com>',
+    from: getFromAddress(),
     to: email,
     subject: 'Secure Passcode Reset Link - Godhara Traditional',
     html,
@@ -273,7 +240,7 @@ export async function sendPasswordChangedEmail(email: string, name: string) {
   `;
 
   queueEmail(email, 'Password Changed Alert', {
-    from: '"Godhara Security" <support@godhara.com>',
+    from: getFromAddress(),
     to: email,
     subject: 'Security Alert: Password Changed Successfully',
     html,
@@ -300,7 +267,7 @@ export async function sendLoginDeviceAlert(email: string, name: string, detail: 
   `;
 
   queueEmail(email, 'Login Device Alert', {
-    from: '"Godhara Security" <support@godhara.com>',
+    from: getFromAddress(),
     to: email,
     subject: 'Security Alert: New Sign-in Logged For Your Account',
     html,
@@ -324,14 +291,14 @@ export async function sendAccountLockedEmail(email: string, name: string) {
   `;
 
   queueEmail(email, 'Account Locked Alert', {
-    from: '"Godhara Security" <support@godhara.com>',
+    from: getFromAddress(),
     to: email,
     subject: 'Security Notice: Account Temporarily Lockout Activated',
     html,
   });
 }
 
-// 7. OTP DISPATCH EMAIL
+// 7. OTP DISPATCH EMAIL (Keep signature, route compatibility, and throw behavior intact)
 export async function sendOTPEmail(email: string, name: string, otp: string) {
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
@@ -350,33 +317,59 @@ export async function sendOTPEmail(email: string, name: string, otp: string) {
   `;
 
   const mailOptions = {
-    from: '"Godhara Security" <support@godhara.com>',
+    from: getFromAddress(),
     to: email.trim().toLowerCase(),
     subject: `Your Secure Login Passcode: ${otp} - Godhara`,
     html,
   };
 
-  const transporter = await getTransporter();
-  if (!transporter) {
-    console.log(`📬 [SMTP LOG FALLBACK] No SMTP/Nodemailer credentials found. Simulating OTP email dispatch to ${email}:`);
-    console.log(`- Subject: ${mailOptions.subject}`);
-    console.log(`- Generated OTP Code for ${email}: ${otp}`);
-    return;
-  }
-
   try {
-    console.log(`📨 [SMTP MAIN] Dispatching secure transactional OTP email synchronously via Nodemailer to ${email}...`);
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`📨 [SMTP MAIN] OTP email successfully delivered to ${email}. Message ID: ${info.messageId}`);
+    await sendViaResend(mailOptions);
   } catch (err: any) {
-    console.error(`❌ [SMTP FAILURE] Failed to deliver OTP email to ${email} via SMTP.`);
-    console.error(`- Error Message: ${err.message}`);
-    console.error(`- SMTP Configuration: HOST=${process.env.SMTP_HOST || 'smtp.gmail.com'}, PORT=${process.env.SMTP_PORT || '587'}, USER=${process.env.SMTP_USER || 'Not Set'}`);
-    throw new Error(`SMTP Mailer failed to dispatch verification token: ${err.message}`);
+    console.error(`❌ [RESEND FAILURE] Failed to deliver OTP email to ${email}. Error: ${err.message}`);
+    throw new Error(`Resend Mailer failed to dispatch verification token: ${err.message}`);
   }
 }
 
-// Existing tax invoice trigger
+// 8. NEW SPECIALIZED EXPORTED OTP FUNCTION
+export async function sendOtpEmail(email: string, name: string, otp: string, purpose: 'LOGIN' | 'ADMIN_LOGIN') {
+  const purposeText = purpose === 'ADMIN_LOGIN' ? 'Administrative Access' : 'Secure Login';
+  const html = `
+    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+      ${brandHeaderHtml}
+      <p style="font-size: 16px; line-height: 1.6; margin-top: 0;">Hare Krishna / Greetings <strong>${name}</strong>,</p>
+      <p style="font-size: 14px; line-height: 1.6;">You requested a One-Time Passcode (OTP) for <strong>${purposeText}</strong>. Please use the secure code below to finalize your sign-in.</p>
+      
+      <div style="text-align: center; margin: 30px 0; background-color: #FAF2E8; padding: 25px; border-radius: 12px; border: 2px dashed #6B2D0E; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
+        <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #6B2D0E; font-family: monospace; text-shadow: 1px 1px 0px #FFF;">${otp}</span>
+      </div>
+
+      <p style="font-size: 12px; color: #D32F2F; text-align: center; font-weight: bold; margin-bottom: 4px;">⚠️ Expiry Warning: This passcode is valid for exactly 5 minutes.</p>
+      <p style="font-size: 11px; color: #777; text-align: center; margin-top: 4px;">Notice: Incorrect passcode entries are restricted. Maximum attempts warning is in effect to protect your account from brute-force threats.</p>
+      
+      <p style="font-size: 11px; color: #888; text-align: center; margin-top: 20px; line-height: 1.4;">
+        If you did not initiate this login request, please ignore this email or change your password immediately to secure your Godhara circle account.
+      </p>
+      ${brandFooterHtml}
+    </div>
+  `;
+
+  const mailOptions = {
+    from: getFromAddress(),
+    to: email.trim().toLowerCase(),
+    subject: `[${purposeText} Verification Code] ${otp} - Godhara`,
+    html,
+  };
+
+  try {
+    await sendViaResend(mailOptions);
+  } catch (err: any) {
+    console.error(`❌ [RESEND OTP FAILURE] Failed to deliver specialized OTP email to ${email}. Error: ${err.message}`);
+    throw new Error(`Resend Mailer failed to dispatch specialized verification token: ${err.message}`);
+  }
+}
+
+// 9. TAX INVOICE DIRECT CONFIRMATION (Uses Base64 attachments)
 export async function sendOrderConfirmationEmail(order: any, invoicePdfPath: string) {
   const settings = {
     storeName: process.env.STORE_NAME || 'Godhara',
@@ -406,24 +399,31 @@ export async function sendOrderConfirmationEmail(order: any, invoicePdfPath: str
     </div>
   `;
 
+  const attachments: Array<{ filename: string; content: string }> = [];
+  if (invoicePdfPath && fs.existsSync(invoicePdfPath)) {
+    try {
+      const base64Content = fs.readFileSync(invoicePdfPath).toString('base64');
+      attachments.push({
+        filename: `Godhara-Invoice-${order.id}.pdf`,
+        content: base64Content,
+      });
+    } catch (err: any) {
+      console.error(`⚠️ [PDF ATTACH ERROR] Failed to read or encode PDF: ${err.message}`);
+    }
+  }
+
   const mailOptions = {
-    from: `"${settings.storeName} Store" <${settings.storeEmail}>`,
+    from: getFromAddress(),
     to: order.shippingAddress.email || order.userId,
     subject: emailSubject,
     html: emailHtml,
-    attachments: fs.existsSync(invoicePdfPath)
-      ? [
-          {
-            filename: `Godhara-Invoice-${order.id}.pdf`,
-            path: invoicePdfPath,
-          },
-        ]
-      : [],
+    attachments,
   };
 
   queueEmail(mailOptions.to, 'Order Confirmation', mailOptions);
 }
 
+// 10. ADMIN ORDER NOTIFICATION (Queued using Resend format)
 export async function sendAdminNewOrderNotificationEmail(order: any, adminEmail: string) {
   const settings = {
     storeName: process.env.STORE_NAME || 'Godhara',
@@ -473,7 +473,7 @@ export async function sendAdminNewOrderNotificationEmail(order: any, adminEmail:
   `;
 
   const mailOptions = {
-    from: `"${settings.storeName} Live Alerts" <${settings.storeEmail}>`,
+    from: getFromAddress(),
     to: adminEmail,
     subject: emailSubject,
     html: emailHtml,
