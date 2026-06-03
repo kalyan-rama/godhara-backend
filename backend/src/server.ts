@@ -6,13 +6,17 @@ import session from 'express-session';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/index.js';
 import { dbInitializationPromise, reloadCache, getPendingFlushPromise } from './database/index.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-
+ 
   // Await active database schema and caches check before handling traffic
   app.use(async (req, res, next) => {
     try {
@@ -126,20 +130,30 @@ async function startServer() {
   // Serve static assets / public files (e.g. barcode results, files)
   app.use('/api-docs', express.static(path.join(process.cwd(), 'data', 'documents')));
   app.use('/assets', (req, res, next) => {
-    const filePath = path.join(process.cwd(), 'assets', req.path);
-    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-       return res.sendFile(filePath);
+    // Try multiple possible paths to locate the assets folder robustly
+    const pathsToTry = [
+      path.join(process.cwd(), 'assets', req.path),
+      path.join(__dirname, '..', 'assets', req.path),
+      path.join(__dirname, 'assets', req.path),
+      path.join(process.cwd(), '..', 'assets', req.path)
+    ];
+
+    for (const filePath of pathsToTry) {
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        console.log(`[Assets Router] Serving static asset: "${filePath}"`);
+        return res.sendFile(filePath);
+      }
     }
+
+    console.warn(`[Assets Router 404] Static asset not found in any resolved paths for req.path: "${req.path}"`);
     next();
   });
 
-  // Ensure and serve static uploaded product images directory
+  // Serving local uploads legacy static directory only if it exists
   const uploadsDir = path.join(process.cwd(), 'data', 'uploads');
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log('[Uploads] Created local image upload directory at:', uploadsDir);
+  if (fs.existsSync(uploadsDir)) {
+    app.use('/uploads', express.static(uploadsDir));
   }
-  app.use('/uploads', express.static(uploadsDir));
 
   // Vite middleware integration for asset pipelines
   if (process.env.NODE_ENV !== 'production') {
