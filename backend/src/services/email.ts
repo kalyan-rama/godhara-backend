@@ -7,7 +7,7 @@ let transporterInstance: nodemailer.Transporter | null = null;
 function getTransporter() {
   if (transporterInstance) return transporterInstance;
 
-  const host = process.env.SMTP_HOST || 'smtp-relay.brevo.com';
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = parseInt(process.env.SMTP_PORT || '587');
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
@@ -17,6 +17,8 @@ function getTransporter() {
     return null;
   }
 
+  console.log(`📡 [SMTP INIT] Initializing Nodemailer transporter for ${host}:${port}...`);
+
   transporterInstance = nodemailer.createTransport({
     host,
     port,
@@ -25,6 +27,17 @@ function getTransporter() {
       user,
       pass,
     },
+    connectionTimeout: 60000,
+    greetingTimeout: 60000,
+    socketTimeout: 60000,
+  });
+
+  transporterInstance.verify((error, success) => {
+    if (error) {
+      console.error(`❌ [SMTP VERIFY ERROR] Verification failed for ${host}:${port} with user: ${user}. Error:`, error);
+    } else {
+      console.log(`✅ [SMTP VERIFY SUCCESS] Successfully verified connectivity to ${host}:${port} for user: ${user}`);
+    }
   });
 
   return transporterInstance;
