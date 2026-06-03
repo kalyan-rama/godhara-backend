@@ -1,13 +1,14 @@
 import nodemailer from 'nodemailer';
 import fs from 'fs';
 import path from 'path';
+import dns from 'dns';
 
 let transporterInstance: nodemailer.Transporter | null = null;
 
-function getTransporter() {
+async function getTransporter(): Promise<nodemailer.Transporter | null> {
   if (transporterInstance) return transporterInstance;
 
-  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const originalHost = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = parseInt(process.env.SMTP_PORT || '587');
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
@@ -17,30 +18,75 @@ function getTransporter() {
     return null;
   }
 
-  console.log(`📡 [SMTP INIT] Initializing Nodemailer transporter for ${host}:${port}...`);
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      console.log(`📡 [SMTP INIT] Attempt ${attempt}/3: Resolving IPv4 and establishing connection to ${originalHost}:${port}...`);
+      
+      let host = originalHost;
+      if (originalHost === 'smtp.gmail.com' || originalHost.includes('gmail')) {
+        try {
+          console.log(`🔍 [DNS RESOLVE] Resolving IPv4 for ${originalHost}...`);
+          const addresses = await dns.promises.resolve4(originalHost);
+          if (addresses && addresses.length > 0) {
+            host = addresses[0];
+            console.log(`🔍 [DNS RESOLVE] Successfully resolved ${originalHost} to IPv4: ${host}`);
+          }
+        } catch (dnsErr: any) {
+          console.warn(`⚠️ [DNS RESOLVE WARNING] DNS resolve4 failed for ${originalHost}: ${dnsErr.message}. Falling back to default host resolution.`);
+        }
+      }
 
-  transporterInstance = nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    auth: {
-      user,
-      pass,
-    },
-    connectionTimeout: 60000,
-    greetingTimeout: 60000,
-    socketTimeout: 60000,
-  });
+      const transportOptions: any = {
+        host,
+        port,
+        secure: port === 465,
+        auth: {
+          user,
+          pass,
+        },
+        family: 4, // Force Node.js/Nodemailer to use IPv4 only
+        connectionTimeout: 60000,
+        greetingTimeout: 60000,
+        socketTimeout: 60000,
+      };
 
-  transporterInstance.verify((error, success) => {
-    if (error) {
-      console.error(`❌ [SMTP VERIFY ERROR] Verification failed for ${host}:${port} with user: ${user}. Error:`, error);
-    } else {
-      console.log(`✅ [SMTP VERIFY SUCCESS] Successfully verified connectivity to ${host}:${port} for user: ${user}`);
+      // If we resolved host to an IP, configure tls servername matching to prevent certificate rejection
+      if (host !== originalHost) {
+        transportOptions.tls = {
+          servername: originalHost,
+          rejectUnauthorized: false
+        };
+      }
+
+      console.log(`📨 [SMTP CREATE] Creating transporter with Options: host=${host}, port=${port}, family=4`);
+      const tempTransporter = nodemailer.createTransport(transportOptions);
+
+      // Verify connection immediately with a Promise wrapper
+      console.log(`⏳ [SMTP VERIFY] Verifying connection for attempt ${attempt}/3...`);
+      await new Promise<void>((resolve, reject) => {
+        tempTransporter.verify((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      console.log(`✅ [SMTP VERIFY SUCCESS] Connected and authenticated successfully to ${originalHost} (${host}):${port} using user: ${user}`);
+      transporterInstance = tempTransporter;
+      return transporterInstance;
+    } catch (err: any) {
+      lastError = err;
+      console.error(`❌ [SMTP INIT ERROR] Attempt ${attempt}/3 failed. Error Code: ${err.code || 'UNKNOWN'}, Message: ${err.message}`);
+      if (attempt < 3) {
+        const delay = attempt * 2000;
+        console.log(`⏳ [SMTP RETRY] Waiting ${delay}ms before retrying SMTP initialization...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
-  });
+  }
 
-  return transporterInstance;
+  console.error(`🚨 [SMTP CRITICAL FAILURE] All 3 SMTP connection attempts failed. Last Error: ${lastError?.message}`);
+  return null;
 }
 
 // Background Queue Simulator (Matches scaling / BullMQ requirements safely in-memory with automated retry exponential backoff!)
@@ -59,7 +105,7 @@ async function triggerBackgroundEmailWorker() {
   if (!pending) return;
 
   pending.attempts++;
-  const transporter = getTransporter();
+  const transporter = await getTransporter();
 
   if (!transporter) {
     console.log(`📬 [SMTP QUEUE EMULATOR] ${pending.type} to ${pending.to} [Attempt ${pending.attempts}/3]:`);
@@ -310,7 +356,7 @@ export async function sendOTPEmail(email: string, name: string, otp: string) {
     html,
   };
 
-  const transporter = getTransporter();
+  const transporter = await getTransporter();
   if (!transporter) {
     console.log(`📬 [SMTP LOG FALLBACK] No SMTP/Nodemailer credentials found. Simulating OTP email dispatch to ${email}:`);
     console.log(`- Subject: ${mailOptions.subject}`);
