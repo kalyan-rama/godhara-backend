@@ -455,28 +455,53 @@ function getAndCleanSessionStates(req: Request): string[] {
   return sessionAny.oauthStates.map((item: any) => item.state);
 }
 
+const globalOAuthStateTracker = new Map<string, number>();
+
 function addSessionState(req: Request, state: string) {
   const sessionAny = req.session as any;
-  if (!sessionAny) return;
-  if (!sessionAny.oauthStates || !Array.isArray(sessionAny.oauthStates)) {
-    sessionAny.oauthStates = [];
+  if (sessionAny) {
+    if (!sessionAny.oauthStates || !Array.isArray(sessionAny.oauthStates)) {
+      sessionAny.oauthStates = [];
+    }
+    const now = Date.now();
+    sessionAny.oauthStates.push({ state, expires: now + 10 * 60 * 1000 }); // 10 minutes TTL
+    
+    // Prevent multiple concurrent login attempts from causing state conflicts or leaking memory
+    if (sessionAny.oauthStates.length > 5) {
+      sessionAny.oauthStates.shift();
+    }
   }
-  const now = Date.now();
-  sessionAny.oauthStates.push({ state, expires: now + 10 * 60 * 1000 }); // 10 minutes TTL
-  
-  // Prevent multiple concurrent login attempts from causing state conflicts or leaking memory
-  if (sessionAny.oauthStates.length > 5) {
-    sessionAny.oauthStates.shift();
-  }
+
+  // Set global backup to prevent "Auth State Mismatch" when redirects on mobile drop secure session cookies
+  const expiry = Date.now() + 10 * 60 * 1000;
+  globalOAuthStateTracker.set(state, expiry);
 }
 
 function verifyAndConsumeSessionState(req: Request, state: string): boolean {
+  const now = Date.now();
+
+  // 1. Check global tracker backup
+  const globalExpiry = globalOAuthStateTracker.get(state);
+  if (globalExpiry && now < globalExpiry) {
+    globalOAuthStateTracker.delete(state);
+
+    // Clean up in session if present too
+    const sessionAny = req.session as any;
+    if (sessionAny && sessionAny.oauthStates && Array.isArray(sessionAny.oauthStates)) {
+      const index = sessionAny.oauthStates.findIndex((item: any) => item && item.state === state);
+      if (index !== -1) {
+        sessionAny.oauthStates.splice(index, 1);
+      }
+    }
+    return true;
+  }
+
+  // 2. Fallback to session check
   const sessionAny = req.session as any;
   if (!sessionAny || !sessionAny.oauthStates || !Array.isArray(sessionAny.oauthStates)) {
     return false;
   }
   
-  const now = Date.now();
   const index = sessionAny.oauthStates.findIndex((item: any) => item && item.state === state && now < item.expires);
   if (index !== -1) {
     sessionAny.oauthStates.splice(index, 1);
@@ -741,9 +766,9 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       throw new Error('Google email is registered as unverified');
     }
 
-    let user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
-    if (!user) {
-      user = dbObj.findUserByEmail(email);
+    let user = dbObj.findUserByEmail(email);
+    if (!user && googleId) {
+      user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
     }
 
     const isNew = !user;
@@ -852,7 +877,7 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       "  }, '*');" +
       "  window.close();" +
       "} else {" +
-      "  window.location.href = '" + (isAdminRole ? '/login' : '/dashboard#token=' + encodeURIComponent(accessToken)) + "';" +
+      "  window.location.href = '" + (isAdminRole ? '/login?requiresOtp=true&email=' + encodeURIComponent(user.email) : '/dashboard#token=' + encodeURIComponent(accessToken)) + "';" +
       "}" +
       "</script></body></html>"
     );
@@ -927,9 +952,9 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
       return res.status(400).json({ message: 'Google account email is not verified' });
     }
 
-    let user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
-    if (!user) {
-      user = dbObj.findUserByEmail(email);
+    let user = dbObj.findUserByEmail(email);
+    if (!user && googleId) {
+      user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
     }
 
     const isNew = !user;
