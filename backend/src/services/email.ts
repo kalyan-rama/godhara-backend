@@ -290,12 +290,31 @@ export async function sendOTPEmail(email: string, name: string, otp: string) {
     </div>
   `;
 
-  queueEmail(email, 'Email OTP Code', {
+  const mailOptions = {
     from: '"Godhara Security" <support@godhara.com>',
-    to: email,
+    to: email.trim().toLowerCase(),
     subject: `Your Secure Login Passcode: ${otp} - Godhara`,
     html,
-  });
+  };
+
+  const transporter = getTransporter();
+  if (!transporter) {
+    console.log(`📬 [SMTP LOG FALLBACK] No SMTP/Nodemailer credentials found. Simulating OTP email dispatch to ${email}:`);
+    console.log(`- Subject: ${mailOptions.subject}`);
+    console.log(`- Generated OTP Code for ${email}: ${otp}`);
+    return;
+  }
+
+  try {
+    console.log(`📨 [SMTP MAIN] Dispatching secure transactional OTP email synchronously via Nodemailer to ${email}...`);
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`📨 [SMTP MAIN] OTP email successfully delivered to ${email}. Message ID: ${info.messageId}`);
+  } catch (err: any) {
+    console.error(`❌ [SMTP FAILURE] Failed to deliver OTP email to ${email} via SMTP.`);
+    console.error(`- Error Message: ${err.message}`);
+    console.error(`- SMTP Configuration: HOST=${process.env.SMTP_HOST || 'smtp.gmail.com'}, PORT=${process.env.SMTP_PORT || '587'}, USER=${process.env.SMTP_USER || 'Not Set'}`);
+    throw new Error(`SMTP Mailer failed to dispatch verification token: ${err.message}`);
+  }
 }
 
 // Existing tax invoice trigger
