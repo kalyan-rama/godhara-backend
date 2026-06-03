@@ -5,8 +5,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
-import { dbObj } from '../database';
-import { generateInvoicePDF, generateShippingLabelPDF, getInvoicePath, getLabelPath } from '../services/pdf';
+import { dbObj } from '../database/index.js';
+import { generateInvoicePDF, generateShippingLabelPDF, getInvoicePath, getLabelPath } from '../services/pdf.js';
 import { 
   sendOrderConfirmationEmail, 
   sendEmailVerification, 
@@ -18,14 +18,14 @@ import {
   sendAdminNewOrderNotificationEmail,
   emailDispatchQueue,
   sendOTPEmail
-} from '../services/email';
+} from '../services/email.js';
 
 import {
   generateSecureOTP,
   getResendCooldownRemaining,
   storeOTP,
   verifyOTPCode
-} from '../services/otp';
+} from '../services/otp.js';
 
 export const apiRouter = Router();
 
@@ -38,6 +38,7 @@ export interface AuthRequest extends Request {
     id: string;
     email: string;
     role: 'CUSTOMER' | 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'VIEWER';
+    otpVerified?: boolean;
   };
 }
 
@@ -82,7 +83,12 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
       return res.status(403).json({ message: 'Invalid or expired signature', error: err.message });
     }
     
-    req.user = userPayload;
+    req.user = {
+      id: userPayload.id,
+      email: userPayload.email,
+      role: userPayload.role,
+      otpVerified: !!userPayload.otpVerified
+    };
     console.log('[Auth Decision Log] JWT Verification success. User:', req.user);
     
     // Auto-propagate back to session for durability
@@ -90,7 +96,8 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
       (req.session as any).user = {
         id: req.user.id,
         email: req.user.email,
-        role: req.user.role
+        role: req.user.role,
+        otpVerified: req.user.otpVerified
       };
     }
 
@@ -216,6 +223,23 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
 
   const existing = dbObj.findUserByEmail(email);
   if (existing && !existing.deletedAt) {
+    if (existing.googleId && !existing.passwordHash) {
+      try {
+        const passwordHash = await bcrypt.hash(password, 12);
+        const updated = dbObj.updateUser(existing.id, {
+          passwordHash,
+          authProvider: 'both',
+          phone: phone || existing.phone,
+          isVerified: true
+        });
+        dbObj.logActivity(updated.id, 'ACCOUNT_UPGRADE_WITH_PASSWORD', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
+        return res.status(201).json({
+          message: 'Sacred Account upgraded successfully! Your Google login now has a password. You can now choose to log in with either Google or local credentials.'
+        });
+      } catch (err: any) {
+        return res.status(500).json({ message: 'Registration upgrade failed', error: err.message });
+      }
+    }
     return res.status(400).json({ message: 'An account with this email address is already registered.' });
   }
 
@@ -341,12 +365,6 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
     // Reset failed counters
     dbObj.updateUser(user.id, { failedLoginAttempts: 0, lockUntil: null });
 
-    // JWT token generation (AccessToken: 15 min; RefreshToken: 30 days if rememberMe triggers)
-    const tokenExpires = rememberMe ? '30d' : '15m';
-    const payload = { id: user.id, email: user.email, role: user.role };
-    const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: tokenExpires });
-
     const sanitizedUser = { 
       id: user.id, 
       name: user.name, 
@@ -356,6 +374,51 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
       address: user.address,
       isVerified: user.isVerified 
     };
+
+    console.log(`[DEBUG Login Role Verification] Database user email: ${user.email}, Role in DB: ${user.role}`);
+
+    const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
+
+    // Logging for standard Email/Password Login attempt before final token or OTP dispatch
+    console.log(`[AUTH LOG] Email received: ${email}`);
+    console.log(`[AUTH LOG] User ID selected: ${user.id}`);
+    console.log(`[AUTH LOG] Role loaded: ${user.role}`);
+    console.log(`[AUTH LOG] Login provider used: email_password`);
+    if (req.session) {
+      const sessionUser = { id: user.id, email: user.email, role: user.role };
+      console.log(`[AUTH LOG] Session user: ${JSON.stringify(sessionUser)}`);
+    } else {
+      console.log(`[AUTH LOG] Session user: undefined (No session)`);
+    }
+    if (!isAdminRole) {
+      const jwtPayload = { id: user.id, email: user.email, role: user.role };
+      console.log(`[AUTH LOG] JWT payload: ${JSON.stringify(jwtPayload)}`);
+    } else {
+      console.log(`[AUTH LOG] JWT payload: delayed (pending OTP verification)`);
+    }
+
+    if (isAdminRole) {
+      console.log(`🛡️ [OTP SECURITY] Admin user logging in. Issuing secure OTP challenge for ${user.email} prior to generating sessions or tokens.`);
+      const code = generateSecureOTP();
+      storeOTP(user.email, code);
+      await sendOTPEmail(user.email, user.name, code);
+      
+      dbObj.logActivity(user.id, 'LOGIN_PASSWORD_VERIFIED_REDIRECT_2FA', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
+
+      console.log(`[DEBUG Login Response] Returning Admin user to frontend with requiresOtp: true, Role: ${sanitizedUser.role}`);
+      return res.json({
+        requiresOtp: true,
+        user: sanitizedUser,
+        message: '🛡️ Multi-Factor OTP Verification required for administrator accounts. Your secure single-use passcode has been sent to your email.'
+      });
+    }
+
+    // Direct customer logon flow (non-admin roles can bypass multi-factor setup)
+    // JWT token generation (AccessToken: 15 min; RefreshToken: 30 days if rememberMe triggers)
+    const tokenExpires = rememberMe ? '30d' : '15m';
+    const payload = { id: user.id, email: user.email, role: user.role };
+    const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: tokenExpires });
 
     // Log Successful Activity Logs
     dbObj.logActivity(user.id, 'LOGIN_SUCCESS', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
@@ -376,7 +439,7 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
         email: user.email,
         role: user.role
       };
-      console.log('[Auth Login] Session state generated for user:', user.id);
+      console.log(`[DEBUG Session Creation] Session state generated for Customer: ${user.id}, Role: ${(req.session as any).user.role}`);
     }
 
     // In production/iframe contexts, we send RefreshToken in HttpOnly secure and cross-origin SameSite cookie
@@ -387,21 +450,6 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
       sameSite: isSec ? 'none' : 'lax',
       maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
     });
-
-    const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
-    if (isAdminRole) {
-      const code = generateSecureOTP();
-      storeOTP(user.email, code);
-      await sendOTPEmail(user.email, user.name, code);
-      
-      dbObj.logActivity(user.id, 'OTP_SENT_ADMIN_CHALLENGE', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
-
-      return res.json({
-        requiresOtp: true,
-        user: sanitizedUser,
-        message: '🛡️ Multi-Factor OTP Verification required for administrator accounts. Your secure single-use passcode has been sent to your email.'
-      });
-    }
 
     res.json({
       accessToken,
@@ -429,28 +477,53 @@ function getAndCleanSessionStates(req: Request): string[] {
   return sessionAny.oauthStates.map((item: any) => item.state);
 }
 
+const globalOAuthStateTracker = new Map<string, number>();
+
 function addSessionState(req: Request, state: string) {
   const sessionAny = req.session as any;
-  if (!sessionAny) return;
-  if (!sessionAny.oauthStates || !Array.isArray(sessionAny.oauthStates)) {
-    sessionAny.oauthStates = [];
+  if (sessionAny) {
+    if (!sessionAny.oauthStates || !Array.isArray(sessionAny.oauthStates)) {
+      sessionAny.oauthStates = [];
+    }
+    const now = Date.now();
+    sessionAny.oauthStates.push({ state, expires: now + 10 * 60 * 1000 }); // 10 minutes TTL
+    
+    // Prevent multiple concurrent login attempts from causing state conflicts or leaking memory
+    if (sessionAny.oauthStates.length > 5) {
+      sessionAny.oauthStates.shift();
+    }
   }
-  const now = Date.now();
-  sessionAny.oauthStates.push({ state, expires: now + 10 * 60 * 1000 }); // 10 minutes TTL
-  
-  // Prevent multiple concurrent login attempts from causing state conflicts or leaking memory
-  if (sessionAny.oauthStates.length > 5) {
-    sessionAny.oauthStates.shift();
-  }
+
+  // Set global backup to prevent "Auth State Mismatch" when redirects on mobile drop secure session cookies
+  const expiry = Date.now() + 10 * 60 * 1000;
+  globalOAuthStateTracker.set(state, expiry);
 }
 
 function verifyAndConsumeSessionState(req: Request, state: string): boolean {
+  const now = Date.now();
+
+  // 1. Check global tracker backup
+  const globalExpiry = globalOAuthStateTracker.get(state);
+  if (globalExpiry && now < globalExpiry) {
+    globalOAuthStateTracker.delete(state);
+
+    // Clean up in session if present too
+    const sessionAny = req.session as any;
+    if (sessionAny && sessionAny.oauthStates && Array.isArray(sessionAny.oauthStates)) {
+      const index = sessionAny.oauthStates.findIndex((item: any) => item && item.state === state);
+      if (index !== -1) {
+        sessionAny.oauthStates.splice(index, 1);
+      }
+    }
+    return true;
+  }
+
+  // 2. Fallback to session check
   const sessionAny = req.session as any;
   if (!sessionAny || !sessionAny.oauthStates || !Array.isArray(sessionAny.oauthStates)) {
     return false;
   }
   
-  const now = Date.now();
   const index = sessionAny.oauthStates.findIndex((item: any) => item && item.state === state && now < item.expires);
   if (index !== -1) {
     sessionAny.oauthStates.splice(index, 1);
@@ -715,9 +788,9 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       throw new Error('Google email is registered as unverified');
     }
 
-    let user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
-    if (!user) {
-      user = dbObj.findUserByEmail(email);
+    let user = dbObj.findUserByEmail(email);
+    if (!user && googleId) {
+      user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
     }
 
     const isNew = !user;
@@ -763,41 +836,62 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
     }
 
     const tokenPayload = { id: user.id, email: user.email, role: user.role };
-    const accessToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign(tokenPayload, JWT_REFRESH_SECRET, { expiresIn: '30d' });
-
-    // Send OTP if user is administrator
     const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
+    let accessToken = '';
+    let refreshToken = '';
+
+    // Logging for Google OAuth login callback
+    console.log(`[AUTH LOG] Email received: ${email}`);
+    console.log(`[AUTH LOG] User ID selected: ${user.id}`);
+    console.log(`[AUTH LOG] Role loaded: ${user.role}`);
+    console.log(`[AUTH LOG] Login provider used: google_oauth`);
+    if (req.session) {
+      const sessionUser = { id: user.id, email: user.email, role: user.role };
+      console.log(`[AUTH LOG] Session user: ${JSON.stringify(sessionUser)}`);
+    } else {
+      console.log(`[AUTH LOG] Session user: undefined (No session)`);
+    }
+    if (!isAdminRole) {
+      console.log(`[AUTH LOG] JWT payload: ${JSON.stringify(tokenPayload)}`);
+    } else {
+      console.log(`[AUTH LOG] JWT payload: delayed (pending OTP verification)`);
+    }
+
     if (isAdminRole) {
       const code = generateSecureOTP();
       storeOTP(user.email, code);
       await sendOTPEmail(user.email, user.name, code);
       dbObj.logActivity(user.id, 'OTP_SENT_ADMIN_GOOGLE_CHALLENGE', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
+    } else {
+      accessToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '15m' });
+      refreshToken = jwt.sign(tokenPayload, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+
+      // Set session user for robust session-based state persistence
+      if (req.session) {
+        (req.session as any).user = {
+          id: user.id,
+          email: user.email,
+          role: user.role
+        };
+        console.log('[Google OAuth Callback] Session state generated for user:', user.id);
+      }
+
+      const isSec = req.secure || req.headers['x-forwarded-proto'] === 'https';
+      res.cookie('token_family', refreshToken, {
+        httpOnly: true,
+        secure: isSec,
+        sameSite: isSec ? 'none' : 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000
+      });
+
+      dbObj.logActivity(user.id, 'GOOGLE_LOGIN', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
+        googleId,
+        email,
+        isNewUser: isNew
+      });
     }
 
-    // Set session user for robust session-based state persistence
-    if (req.session) {
-      (req.session as any).user = {
-        id: user.id,
-        email: user.email,
-        role: user.role
-      };
-      console.log('[Google OAuth Callback] Session state generated for user:', user.id);
-    }
-
-    const isSec = req.secure || req.headers['x-forwarded-proto'] === 'https';
-    res.cookie('token_family', refreshToken, {
-      httpOnly: true,
-      secure: isSec,
-      sameSite: isSec ? 'none' : 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000
-    });
-
-    dbObj.logActivity(user.id, 'GOOGLE_LOGIN', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
-      googleId,
-      email,
-      isNewUser: isNew
-    });
+    console.log(`[DEBUG Google OAuth Callback] DB User: ${user.email}, Role: ${user.role}, requiresOtp: ${isAdminRole}`);
 
     res.send(
       "<html><head><title>Success Connecting</title></head>" +
@@ -808,8 +902,9 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       "if (window.opener) {" +
       "  window.opener.postMessage({" +
       "    type: 'OAUTH_AUTH_SUCCESS'," +
-      "    accessToken: " + JSON.stringify(accessToken) + "," +
-      "    refreshToken: " + JSON.stringify(refreshToken) + "," +
+      "    requiresOtp: " + JSON.stringify(isAdminRole) + "," +
+      "    accessToken: " + JSON.stringify(accessToken || null) + "," +
+      "    refreshToken: " + JSON.stringify(refreshToken || null) + "," +
       "    user: " + JSON.stringify({
              id: user.id,
              name: user.name,
@@ -823,7 +918,7 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       "  }, '*');" +
       "  window.close();" +
       "} else {" +
-      "  window.location.href = '/dashboard#token=' + encodeURIComponent(" + JSON.stringify(accessToken) + ");" +
+      "  window.location.href = '" + (isAdminRole ? '/login?requiresOtp=true&email=' + encodeURIComponent(user.email) : '/dashboard#token=' + encodeURIComponent(accessToken)) + "';" +
       "}" +
       "</script></body></html>"
     );
@@ -898,9 +993,9 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
       return res.status(400).json({ message: 'Google account email is not verified' });
     }
 
-    let user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
-    if (!user) {
-      user = dbObj.findUserByEmail(email);
+    let user = dbObj.findUserByEmail(email);
+    if (!user && googleId) {
+      user = dbObj.getUsers().find((u: any) => u.googleId === googleId && !u.deletedAt);
     }
 
     const isNew = !user;
@@ -945,18 +1040,51 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
       await sendWelcomeEmail(email, name || 'Gau Devotee');
     }
 
-    const tokenPayload = { id: user.id, email: user.email, role: user.role };
-    const accessToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign(tokenPayload, JWT_REFRESH_SECRET, { expiresIn: '30d' });
-
-    // Send OTP if user is administrator
     const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
+
+    // Logging for direct Google token endpoint
+    console.log(`[AUTH LOG] Email received: ${email}`);
+    console.log(`[AUTH LOG] User ID selected: ${user.id}`);
+    console.log(`[AUTH LOG] Role loaded: ${user.role}`);
+    console.log(`[AUTH LOG] Login provider used: google_token`);
+    if (req.session) {
+      const sessionUser = { id: user.id, email: user.email, role: user.role };
+      console.log(`[AUTH LOG] Session user: ${JSON.stringify(sessionUser)}`);
+    } else {
+      console.log(`[AUTH LOG] Session user: undefined (No session)`);
+    }
+    if (!isAdminRole) {
+      const tokenPayload = { id: user.id, email: user.email, role: user.role };
+      console.log(`[AUTH LOG] JWT payload: ${JSON.stringify(tokenPayload)}`);
+    } else {
+      console.log(`[AUTH LOG] JWT payload: delayed (pending OTP verification)`);
+    }
+
     if (isAdminRole) {
       const code = generateSecureOTP();
       storeOTP(user.email, code);
       await sendOTPEmail(user.email, user.name, code);
       dbObj.logActivity(user.id, 'OTP_SENT_ADMIN_GOOGLE_TOKEN_CHALLENGE', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
+      
+      return res.json({
+        requiresOtp: true,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          googleAvatar: user.googleAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150',
+          phone: user.phone || '',
+          address: user.address,
+          isVerified: true
+        },
+        message: '🛡️ Multi-Factor OTP Verification required for administrator accounts. A secure single-use passcode has been sent to your email.'
+      });
     }
+
+    const tokenPayload = { id: user.id, email: user.email, role: user.role };
+    const accessToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign(tokenPayload, JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
     // Set session user for robust session-based state persistence
     if (req.session) {
@@ -1072,17 +1200,56 @@ apiRouter.post('/auth/admin-otp-verify', authRateLimiter, async (req, res) => {
     return res.status(400).json({ message: `Incorrect passcode. Attempts remaining: ${otpResult.attemptsRemaining}` });
   }
 
-  const payload = { id: user.id, email: user.email, role: user.role };
+  const payload = { id: user.id, email: user.email, role: user.role, otpVerified: true };
   const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '30m' });
   const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+
+  // Logging for OTP Verification completion
+  console.log(`[AUTH LOG] Email received: ${email}`);
+  console.log(`[AUTH LOG] User ID selected: ${user.id}`);
+  console.log(`[AUTH LOG] Role loaded: ${user.role}`);
+  console.log(`[AUTH LOG] Login provider used: otp_verification`);
+  if (req.session) {
+    const sessionUser = { id: user.id, email: user.email, role: user.role, otpVerified: true };
+    console.log(`[AUTH LOG] Session user: ${JSON.stringify(sessionUser)}`);
+  } else {
+    console.log(`[AUTH LOG] Session user: undefined (No session)`);
+  }
+  console.log(`[AUTH LOG] JWT payload: ${JSON.stringify(payload)}`);
+
+  // Reset failed counters
+  dbObj.updateUser(user.id, { failedLoginAttempts: 0, lockUntil: null });
 
   // Log Successful 2FA activity
   dbObj.logActivity(user.id, 'ADMIN_2FA_SUCCESS', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
 
+  // Set session user for robust session-based state persistence
+  if (req.session) {
+    (req.session as any).user = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      otpVerified: true
+    };
+    console.log(`[DEBUG OTP Verification Complete] Database Role: ${user.role}, Session Role: ${(req.session as any).user.role}`);
+  }
+
+  // In production/iframe contexts, we send RefreshToken in HttpOnly secure and cross-origin SameSite cookie
+  const isSec = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.cookie('token_family', refreshToken, {
+    httpOnly: true,
+    secure: isSec,
+    sameSite: isSec ? 'none' : 'lax',
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+  });
+
+  const responseUser = { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone, address: user.address, otpVerified: true };
+  console.log(`[DEBUG OTP Verification Return] Returning User to Frontend with Role: ${responseUser.role}`);
+
   res.json({
     accessToken,
     refreshToken,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone, address: user.address }
+    user: responseUser
   });
 });
 
@@ -1346,7 +1513,12 @@ apiRouter.post('/auth/refresh-token', (req, res) => {
     }
 
     // ROTATION: Trigger family rotate by issuing fresh token
-    const payload = { id: user.id, email: user.email, role: user.role };
+    const payload = { 
+      id: user.id, 
+      email: user.email, 
+      role: user.role,
+      otpVerified: !!tokenDecoded.otpVerified
+    };
     const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '15m' });
     const freshRefreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
