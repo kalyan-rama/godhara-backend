@@ -27,10 +27,11 @@ async function sendViaResend(payload: {
 }) {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
+    const obscuredSubject = payload.subject.replace(/\b\d{6}\b/g, '******');
     console.log(`📬 [RESEND LOG FALLBACK] No RESEND_API_KEY defined. Simulating delivery:`);
     console.log(`- From: ${payload.from}`);
     console.log(`- To: ${Array.isArray(payload.to) ? payload.to.join(', ') : payload.to}`);
-    console.log(`- Subject: ${payload.subject}`);
+    console.log(`- Subject: ${obscuredSubject}`);
     return { id: `simulated-${Date.now()}` };
   }
 
