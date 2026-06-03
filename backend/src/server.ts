@@ -5,147 +5,158 @@ import express from 'express';
 import session from 'express-session';
 import path from 'path';
 import fs from 'fs';
-
+import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './routes/index.js';
-import { dbInitializationPromise } from './database/index.js';
+import { dbInitializationPromise, reloadCache, getPendingFlushPromise } from './database/index.js';
 
 async function startServer() {
   const app = express();
+  const PORT = 3000;
 
-  const PORT = process.env.PORT || 3000;
-
-  // Database initialization check
+  // Await active database schema and caches check before handling traffic
   app.use(async (req, res, next) => {
     try {
       await dbInitializationPromise;
+
+      // Reload cache for read paths to ensure multi-instance writes are fetched fresh from Postgres
+      if (req.method === 'GET' || req.path.includes('/products') || req.path.includes('/orders')) {
+        await reloadCache();
+      }
+
+      // Intercept response methods to ensure pending database flushes complete before response completes.
+      // This is vital for serverless (like Vercel) where background threads freeze immediately when request finishes!
+      const originalJson = res.json;
+      const originalSend = res.send;
+      const originalSendStatus = res.sendStatus;
+
+      res.json = function (body: any) {
+        getPendingFlushPromise().then(() => {
+          originalJson.call(res, body);
+        }).catch((err) => {
+          console.error('[PostgreSQL Interceptor] Delay flush failed:', err);
+          originalJson.call(res, body);
+        });
+        return res;
+      };
+
+      res.send = function (body: any) {
+        getPendingFlushPromise().then(() => {
+          originalSend.call(res, body);
+        }).catch((err) => {
+          console.error('[PostgreSQL Interceptor] Delay flush failed:', err);
+          originalSend.call(res, body);
+        });
+        return res;
+      };
+
+      res.sendStatus = function (statusCode: number) {
+        getPendingFlushPromise().then(() => {
+          originalSendStatus.call(res, statusCode);
+        }).catch((err) => {
+          console.error('[PostgreSQL Interceptor] Delay flush failed:', err);
+          originalSendStatus.call(res, statusCode);
+        });
+        return res;
+      };
+
       next();
     } catch (err: any) {
-      console.error('[PostgreSQL Engine Initialization Error]', err);
-      res.status(500).json({
-        error: 'Database failed to initialize. Please check connection logs.',
-      });
+      console.error("[PostgreSQL Engine Initialization/Sync Middleware Error] Logging trace:", err);
+      res.status(500).json({ error: "Database failed to process cache sync. Please inspect connection logs." });
     }
   });
 
+  // Trust first proxy for secure cookie delivery on proxy headers
   app.set('trust proxy', 1);
 
-  // CORS
+  // Robust CORS and Cross-Origin Sharing Policy Middleware for iframe compatibility
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      if (origin !== 'null' && origin !== '*') {
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+      }
     } else {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
-
-    res.setHeader(
-      'Access-Control-Allow-Methods',
-      'GET, POST, PUT, DELETE, PATCH, OPTIONS'
-    );
-
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Requested-With'
-    );
-
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
     }
-
     next();
   });
 
+  // Middleware for parsing requests
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Session
-  app.use(
-    session({
-      secret:
-        process.env.SESSION_SECRET ||
-        'godhara-secret-session-key-2026',
+  // Configure express-session for robust state persistence and secure cookies
+  app.use(session({
+    secret: process.env.SESSION_SECRET || 'godhara-secret-session-key-2026',
+    resave: false,
+    saveUninitialized: true,
+    name: 'gdh.sid',
+    cookie: {
+      secure: false, // Default fallback
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 1000 // 1 hour active lifetime
+    }
+  }));
 
-      resave: false,
-      saveUninitialized: true,
-
-      name: 'gdh.sid',
-
-      cookie: {
-        secure: false,
-        httpOnly: true,
-        sameSite: 'lax',
-        maxAge: 60 * 60 * 1000,
-      },
-    })
-  );
-
+  // Dynamically configure session cookies based on SSL termination to support iframe embedding
   app.use((req, res, next) => {
-    const isSecure =
-      req.secure ||
-      req.headers['x-forwarded-proto'] === 'https';
-
-    if (isSecure) {
+    const isSec = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    if (isSec) {
       req.session.cookie.secure = true;
       req.session.cookie.sameSite = 'none';
     } else {
       req.session.cookie.secure = false;
       req.session.cookie.sameSite = 'lax';
     }
-
     next();
   });
 
-  // API Routes
+  // API router goes FIRST
   app.use('/api', apiRouter);
 
-  // Static Files
-  app.use(
-    '/api-docs',
-    express.static(path.join(process.cwd(), 'data', 'documents'))
-  );
+  // Serve static assets / public files (e.g. barcode results, files)
+  app.use('/api-docs', express.static(path.join(process.cwd(), 'data', 'documents')));
+  app.use('/assets', express.static(path.join(process.cwd(), 'assets')));
 
-  app.use(
-    '/assets',
-    express.static(path.join(process.cwd(), 'assets'))
-  );
-
-  // Uploads Directory
-  const uploadsDir = path.join(
-    process.cwd(),
-    'data',
-    'uploads'
-  );
-
+  // Ensure and serve static uploaded product images directory
+  const uploadsDir = path.join(process.cwd(), 'data', 'uploads');
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
-
-    console.log(
-      '[Uploads] Created local image upload directory:',
-      uploadsDir
-    );
+    console.log('[Uploads] Created local image upload directory at:', uploadsDir);
   }
-
   app.use('/uploads', express.static(uploadsDir));
 
-  // Health Check
-  app.get('/', (req, res) => {
-    res.json({
-      status: 'ok',
-      app: 'Godhara Backend API',
-      environment: process.env.NODE_ENV || 'development',
+  // Vite middleware integration for asset pipelines
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
     });
-  });
+    app.use(vite.middlewares);
+    console.log('⚡ Running development server with active Vite middleware');
+  } else {
+    // Production serving from client dist directory
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+    console.log('📦 Running production build server');
+  }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Godhara Backend running on port ${PORT}`);
+    console.log(`🚀 Godhara server started at http://localhost:${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error(
-    '❌ Failed to start Godhara backend:',
-    err
-  );
+  console.error('❌ Failed to boot Godhara full-stack cluster server:', err);
 });
