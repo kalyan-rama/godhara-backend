@@ -263,246 +263,294 @@ export async function flushToPostgres(data: any) {
   let client;
   try {
     client = await pool.connect();
-    await client.query('BEGIN');
     
     // 1. Categories
-    if (data.categories) {
-      for (const cat of data.categories) {
-        await client.query(
-          `INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
-          [cat]
-        );
+    try {
+      if (data.categories) {
+        for (const cat of data.categories) {
+          await client.query(
+            `INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+            [cat]
+          );
+        }
+        console.log(`[Database Sync] Synchronized ${data.categories.length} categories.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing categories table:', e.message);
     }
 
     // 2. Settings
-    if (data.settings) {
-      await client.query(
-        `INSERT INTO settings (
-          id, "storeName", "logoUrl", "founderImageUrl", "founderName", "founderQuote", 
-          "contactEmail", address, phone, "freeShippingThreshold", "flatShippingCharge", 
-          "announcementText", "lowStockThreshold"
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-        ON CONFLICT (id) DO UPDATE SET
-          "storeName" = EXCLUDED."storeName",
-          "logoUrl" = EXCLUDED."logoUrl",
-          "founderImageUrl" = EXCLUDED."founderImageUrl",
-          "founderName" = EXCLUDED."founderName",
-          "founderQuote" = EXCLUDED."founderQuote",
-          "contactEmail" = EXCLUDED."contactEmail",
-          address = EXCLUDED.address,
-          phone = EXCLUDED.phone,
-          "freeShippingThreshold" = EXCLUDED."freeShippingThreshold",
-          "flatShippingCharge" = EXCLUDED."flatShippingCharge",
-          "announcementText" = EXCLUDED."announcementText",
-          "lowStockThreshold" = EXCLUDED."lowStockThreshold"`,
-        [
-          'global',
-          data.settings.storeName,
-          data.settings.logoUrl,
-          data.settings.founderImageUrl,
-          data.settings.founderName,
-          data.settings.founderQuote,
-          data.settings.contactEmail,
-          data.settings.address,
-          data.settings.phone,
-          data.settings.freeShippingThreshold,
-          data.settings.flatShippingCharge,
-          data.settings.announcementText,
-          data.settings.lowStockThreshold
-        ]
-      );
+    try {
+      if (data.settings) {
+        await client.query(
+          `INSERT INTO settings (
+            id, "storeName", "logoUrl", "founderImageUrl", "founderName", "founderQuote", 
+            "contactEmail", address, phone, "freeShippingThreshold", "flatShippingCharge", 
+            "announcementText", "lowStockThreshold"
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          ON CONFLICT (id) DO UPDATE SET
+            "storeName" = EXCLUDED."storeName",
+            "logoUrl" = EXCLUDED."logoUrl",
+            "founderImageUrl" = EXCLUDED."founderImageUrl",
+            "founderName" = EXCLUDED."founderName",
+            "founderQuote" = EXCLUDED."founderQuote",
+            "contactEmail" = EXCLUDED."contactEmail",
+            address = EXCLUDED.address,
+            phone = EXCLUDED.phone,
+            "freeShippingThreshold" = EXCLUDED."freeShippingThreshold",
+            "flatShippingCharge" = EXCLUDED."flatShippingCharge",
+            "announcementText" = EXCLUDED."announcementText",
+            "lowStockThreshold" = EXCLUDED."lowStockThreshold"`,
+          [
+            'global',
+            data.settings.storeName,
+            data.settings.logoUrl,
+            data.settings.founderImageUrl,
+            data.settings.founderName,
+            data.settings.founderQuote,
+            data.settings.contactEmail,
+            data.settings.address,
+            data.settings.phone,
+            data.settings.freeShippingThreshold,
+            data.settings.flatShippingCharge,
+            data.settings.announcementText,
+            data.settings.lowStockThreshold
+          ]
+        );
+        console.log('[Database Sync] Synchronized settings.');
+      }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing settings table:', e.message);
     }
 
     // 3. Users
-    if (data.users) {
-      for (const u of data.users) {
-        await client.query(
-          `INSERT INTO users (
-            id, name, email, "passwordHash", role, phone, address, "createdAt", "updatedAt",
-            "googleId", "googleAvatar", "authProvider", "isVerified", "isBanned", "deletedAt", "passwordHistory",
-            "failedLoginAttempts", "lockUntil"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-          ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            email = EXCLUDED.email,
-            "passwordHash" = EXCLUDED."passwordHash",
-            role = EXCLUDED.role,
-            phone = EXCLUDED.phone,
-            address = EXCLUDED.address,
-            "updatedAt" = EXCLUDED."updatedAt",
-            "googleId" = EXCLUDED."googleId",
-            "googleAvatar" = EXCLUDED."googleAvatar",
-            "authProvider" = EXCLUDED."authProvider",
-            "isVerified" = EXCLUDED."isVerified",
-            "isBanned" = EXCLUDED."isBanned",
-            "deletedAt" = EXCLUDED."deletedAt",
-            "passwordHistory" = EXCLUDED."passwordHistory",
-            "failedLoginAttempts" = EXCLUDED."failedLoginAttempts",
-            "lockUntil" = EXCLUDED."lockUntil"`,
-          [
-            u.id, u.name, u.email, u.passwordHash || null, u.role, u.phone || '',
-            JSON.stringify(u.address || {}), u.createdAt, u.updatedAt,
-            u.googleId || null, u.googleAvatar || null, u.authProvider || null,
-            !!u.isVerified, !!u.isBanned, u.deletedAt || null,
-            JSON.stringify(u.passwordHistory || []), u.failedLoginAttempts || 0, u.lockUntil || null
-          ]
-        );
+    try {
+      if (data.users) {
+        for (const u of data.users) {
+          await client.query(
+            `INSERT INTO users (
+              id, name, email, "passwordHash", role, phone, address, "createdAt", "updatedAt",
+              "googleId", "googleAvatar", "authProvider", "isVerified", "isBanned", "deletedAt", "passwordHistory",
+              "failedLoginAttempts", "lockUntil"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ON CONFLICT (id) DO UPDATE SET
+              name = EXCLUDED.name,
+              email = EXCLUDED.email,
+              "passwordHash" = EXCLUDED."passwordHash",
+              role = EXCLUDED.role,
+              phone = EXCLUDED.phone,
+              address = EXCLUDED.address,
+              "updatedAt" = EXCLUDED."updatedAt",
+              "googleId" = EXCLUDED."googleId",
+              "googleAvatar" = EXCLUDED."googleAvatar",
+              "authProvider" = EXCLUDED."authProvider",
+              "isVerified" = EXCLUDED."isVerified",
+              "isBanned" = EXCLUDED."isBanned",
+              "deletedAt" = EXCLUDED."deletedAt",
+              "passwordHistory" = EXCLUDED."passwordHistory",
+              "failedLoginAttempts" = EXCLUDED."failedLoginAttempts",
+              "lockUntil" = EXCLUDED."lockUntil"`,
+            [
+              u.id, u.name, u.email, u.passwordHash || null, u.role, u.phone || '',
+              JSON.stringify(u.address || {}), u.createdAt, u.updatedAt,
+              u.googleId || null, u.googleAvatar || null, u.authProvider || null,
+              !!u.isVerified, !!u.isBanned, u.deletedAt || null,
+              JSON.stringify(u.passwordHistory || []), u.failedLoginAttempts || 0, u.lockUntil || null
+            ]
+          );
+        }
+        console.log(`[Database Sync] Synchronized ${data.users.length} users successfully.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing users table:', e.message);
     }
 
     // 4. Products
-    if (data.products) {
-      for (const p of data.products) {
-        await client.query(
-          `INSERT INTO products (
-            id, name, slug, description, price, "discountPrice", stock, category, images,
-            "isFeatured", "isActive", weight, "createdAt", "updatedAt"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-          ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            slug = EXCLUDED.slug,
-            description = EXCLUDED.description,
-            price = EXCLUDED.price,
-            "discountPrice" = EXCLUDED."discountPrice",
-            stock = EXCLUDED.stock,
-            category = EXCLUDED.category,
-            images = EXCLUDED.images,
-            "isFeatured" = EXCLUDED."isFeatured",
-            "isActive" = EXCLUDED."isActive",
-            weight = EXCLUDED.weight,
-            "updatedAt" = EXCLUDED."updatedAt"`,
-          [
-            p.id, p.name, p.slug, p.description || '', p.price, p.discountPrice, p.stock || 0,
-            p.category, JSON.stringify(p.images || []), !!p.isFeatured, !!p.isActive,
-            p.weight, p.createdAt, p.updatedAt
-          ]
-        );
+    try {
+      if (data.products) {
+        let insertCount = 0;
+        let updateCount = 0;
+        for (const p of data.products) {
+          const res = await client.query(
+            `INSERT INTO products (
+              id, name, slug, description, price, "discountPrice", stock, category, images,
+              "isFeatured", "isActive", weight, "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (id) DO UPDATE SET
+              name = EXCLUDED.name,
+              slug = EXCLUDED.slug,
+              description = EXCLUDED.description,
+              price = EXCLUDED.price,
+              "discountPrice" = EXCLUDED."discountPrice",
+              stock = EXCLUDED.stock,
+              category = EXCLUDED.category,
+              images = EXCLUDED.images,
+              "isFeatured" = EXCLUDED."isFeatured",
+              "isActive" = EXCLUDED."isActive",
+              weight = EXCLUDED.weight,
+              "updatedAt" = EXCLUDED."updatedAt"
+            RETURNING (xmax = 0) AS is_insert`,
+            [
+              p.id, p.name, p.slug, p.description || '', p.price, p.discountPrice, p.stock || 0,
+              p.category, JSON.stringify(p.images || []), !!p.isFeatured, !!p.isActive,
+              p.weight, p.createdAt, p.updatedAt
+            ]
+          );
+          if (res.rows && res.rows[0] && res.rows[0].is_insert) {
+            insertCount++;
+          } else {
+            updateCount++;
+          }
+        }
+        console.log(`[Database Sync] Synchronized products: ${insertCount} created/inserted, ${updateCount} updated.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing products table:', e.message);
     }
 
     // 5. Orders
-    if (data.orders) {
-      for (const o of data.orders) {
-        await client.query(
-          `INSERT INTO orders (
-            id, "userId", items, subtotal, "shippingCharge", total, status, "paymentStatus",
-            "shippingAddress", "invoiceUrl", "labelUrl", "trackingNumber", "createdAt", "updatedAt"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-          ON CONFLICT (id) DO UPDATE SET
-            status = EXCLUDED.status,
-            "paymentStatus" = EXCLUDED."paymentStatus",
-            "invoiceUrl" = EXCLUDED."invoiceUrl",
-            "labelUrl" = EXCLUDED."labelUrl",
-            "trackingNumber" = EXCLUDED."trackingNumber",
-            "updatedAt" = EXCLUDED."updatedAt"`,
-          [
-            o.id, o.userId, JSON.stringify(o.items || []), o.subtotal, o.shippingCharge, o.total,
-            o.status, o.paymentStatus, JSON.stringify(o.shippingAddress || {}),
-            o.invoiceUrl || '', o.labelUrl || '', o.trackingNumber || '',
-            o.createdAt, o.updatedAt
-          ]
-        );
+    try {
+      if (data.orders) {
+        for (const o of data.orders) {
+          await client.query(
+            `INSERT INTO orders (
+              id, "userId", items, subtotal, "shippingCharge", total, status, "paymentStatus",
+              "shippingAddress", "invoiceUrl", "labelUrl", "trackingNumber", "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (id) DO UPDATE SET
+              status = EXCLUDED.status,
+              "paymentStatus" = EXCLUDED."paymentStatus",
+              "invoiceUrl" = EXCLUDED."invoiceUrl",
+              "labelUrl" = EXCLUDED."labelUrl",
+              "trackingNumber" = EXCLUDED."trackingNumber",
+              "updatedAt" = EXCLUDED."updatedAt"`,
+            [
+              o.id, o.userId, JSON.stringify(o.items || []), o.subtotal, o.shippingCharge, o.total,
+              o.status, o.paymentStatus, JSON.stringify(o.shippingAddress || {}),
+              o.invoiceUrl || '', o.labelUrl || '', o.trackingNumber || '',
+              o.createdAt, o.updatedAt
+            ]
+          );
+        }
+        console.log(`[Database Sync] Synchronized ${data.orders.length} orders successfully.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing orders table:', e.message);
     }
 
     // 6. Carts
-    if (data.carts) {
-      for (const c of data.carts) {
-        await client.query(
-          `INSERT INTO carts (id, "userId", items, "updatedAt")
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT ("userId") DO UPDATE SET
-            items = EXCLUDED.items,
-            "updatedAt" = EXCLUDED."updatedAt"`,
-          [c.id, c.userId, JSON.stringify(c.items || []), c.updatedAt]
-        );
+    try {
+      if (data.carts) {
+        for (const c of data.carts) {
+          await client.query(
+            `INSERT INTO carts (id, "userId", items, "updatedAt")
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT ("userId") DO UPDATE SET
+              items = EXCLUDED.items,
+              "updatedAt" = EXCLUDED."updatedAt"`,
+            [c.id, c.userId, JSON.stringify(c.items || []), c.updatedAt]
+          );
+        }
+        console.log(`[Database Sync] Synchronized ${data.carts.length} carts successfully.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing carts table:', e.message);
     }
 
     // 7. Coupons
-    if (data.coupons) {
-      // Clean delete removed coupons
-      const currentIds = data.coupons.map((c: any) => c.id);
-      if (currentIds.length > 0) {
-        await client.query(`DELETE FROM coupons WHERE id NOT IN (${currentIds.map((_: any, i: number) => `$${i + 1}`).join(',')})`, currentIds);
-      } else {
-        await client.query('DELETE FROM coupons');
-      }
+    try {
+      if (data.coupons) {
+        const currentIds = data.coupons.map((c: any) => c.id);
+        if (currentIds.length > 0) {
+          await client.query(`DELETE FROM coupons WHERE id NOT IN (${currentIds.map((_: any, i: number) => `$${i + 1}`).join(',')})`, currentIds);
+        } else {
+          await client.query('DELETE FROM coupons');
+        }
 
-      for (const c of data.coupons) {
-        await client.query(
-          `INSERT INTO coupons (
-            id, code, type, value, "minOrderValue", "maxUses", "usageCount", "expiryDate", "isActive", "createdAt"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-          ON CONFLICT (id) DO UPDATE SET
-            code = EXCLUDED.code,
-            type = EXCLUDED.type,
-            value = EXCLUDED.value,
-            "minOrderValue" = EXCLUDED."minOrderValue",
-            "maxUses" = EXCLUDED."maxUses",
-            "usageCount" = EXCLUDED."usageCount",
-            "expiryDate" = EXCLUDED."expiryDate",
-            "isActive" = EXCLUDED."isActive"`,
-          [
-            c.id, c.code, c.type, c.value, c.minOrderValue, c.maxUses, c.usageCount,
-            c.expiryDate, !!c.isActive, c.createdAt
-          ]
-        );
+        for (const c of data.coupons) {
+          await client.query(
+            `INSERT INTO coupons (
+              id, code, type, value, "minOrderValue", "maxUses", "usageCount", "expiryDate", "isActive", "createdAt"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (id) DO UPDATE SET
+              code = EXCLUDED.code,
+              type = EXCLUDED.type,
+              value = EXCLUDED.value,
+              "minOrderValue" = EXCLUDED."minOrderValue",
+              "maxUses" = EXCLUDED."maxUses",
+              "usageCount" = EXCLUDED."usageCount",
+              "expiryDate" = EXCLUDED."expiryDate",
+              "isActive" = EXCLUDED."isActive"`,
+            [
+              c.id, c.code, c.type, c.value, c.minOrderValue, c.maxUses, c.usageCount,
+              c.expiryDate, !!c.isActive, c.createdAt
+            ]
+          );
+        }
+        console.log(`[Database Sync] Synchronized ${data.coupons.length} coupons successfully.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing coupons table:', e.message);
     }
 
     // 8. Activity Logs
-    if (data.activity_logs) {
-      for (const log of data.activity_logs) {
-        await client.query(
-          `INSERT INTO activity_logs (id, "userId", action, ip, "userAgent", metadata, timestamp)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-          ON CONFLICT (id) DO NOTHING`,
-          [
-            log.id, log.userId, log.action, log.ip, log.userAgent,
-            JSON.stringify(log.metadata || {}), log.timestamp
-          ]
-        );
+    try {
+      if (data.activity_logs) {
+        for (const log of data.activity_logs) {
+          await client.query(
+            `INSERT INTO activity_logs (id, "userId", action, ip, "userAgent", metadata, timestamp)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO NOTHING`,
+            [
+              log.id, log.userId, log.action, log.ip, log.userAgent,
+              JSON.stringify(log.metadata || {}), log.timestamp
+            ]
+          );
+        }
+        console.log(`[Database Sync] Synchronized ${data.activity_logs.length} activity logs.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing activity logs table:', e.message);
     }
 
     // 9. Email Verifications
-    if (data.email_verifications) {
-      for (const ev of data.email_verifications) {
-        await client.query(
-          `INSERT INTO email_verifications ("userId", token, "expiresAt", "usedAt")
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT (token) DO UPDATE SET
-            "usedAt" = EXCLUDED."usedAt"`,
-          [ev.userId, ev.token, ev.expiresAt, ev.usedAt]
-        );
+    try {
+      if (data.email_verifications) {
+        for (const ev of data.email_verifications) {
+          await client.query(
+            `INSERT INTO email_verifications ("userId", token, "expiresAt", "usedAt")
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (token) DO UPDATE SET
+              "usedAt" = EXCLUDED."usedAt"`,
+            [ev.userId, ev.token, ev.expiresAt, ev.usedAt]
+          );
+        }
+        console.log(`[Database Sync] Synchronized email verifications.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing email verifications table:', e.message);
     }
 
     // 10. Password Resets
-    if (data.password_resets) {
-      for (const pr of data.password_resets) {
-        await client.query(
-          `INSERT INTO password_resets ("userId", token, "expiresAt", "usedAt")
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT (token) DO UPDATE SET
-            "usedAt" = EXCLUDED."usedAt"`,
-          [pr.userId, pr.token, pr.expiresAt, pr.usedAt]
-        );
+    try {
+      if (data.password_resets) {
+        for (const pr of data.password_resets) {
+          await client.query(
+            `INSERT INTO password_resets ("userId", token, "expiresAt", "usedAt")
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (token) DO UPDATE SET
+              "usedAt" = EXCLUDED."usedAt"`,
+            [pr.userId, pr.token, pr.expiresAt, pr.usedAt]
+          );
+        }
+        console.log(`[Database Sync] Synchronized password resets.`);
       }
+    } catch (e: any) {
+      console.error('[Database Sync Error] Failed syncing password resets table:', e.message);
     }
 
-    await client.query('COMMIT');
-  } catch (err) {
-    if (client) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackErr) {
-        console.error("[PostgreSQL] Failed to rollback transaction:", rollbackErr);
-      }
-    }
-    console.error("[PostgreSQL] Transaction sync failed, rolling back:", err);
+  } catch (err: any) {
+    console.error("[PostgreSQL] Error during connection or synchronization block:", err.message || err);
     throw err;
   } finally {
     if (client) client.release();
@@ -940,6 +988,23 @@ async function startupInit() {
 // Export a background database initialization promise to comply with standard ES/CommonJS bundling modules without top-level block limits
 export const dbInitializationPromise = startupInit();
 
+// Define a pending flush promise tracker to avoid premature freeze in serverless environments (like Vercel)
+let pendingFlushPromise: Promise<void> = Promise.resolve();
+
+export function getPendingFlushPromise(): Promise<void> {
+  return pendingFlushPromise;
+}
+
+export async function reloadCache() {
+  if (isPostgresConnected) {
+    try {
+      cache = await loadFromPostgres();
+    } catch (err) {
+      console.error("[PostgreSQL] Error during reloadCache query:", err);
+    }
+  }
+}
+
 // Local JSON Replacement Loader & Writer (Reads/Writes directly to PostgreSQL backend)
 function readData() {
   if (!cache) {
@@ -951,19 +1016,24 @@ function readData() {
 function writeData(data: any) {
   cache = data;
   if (isPostgresConnected) {
-    // Trigger background async db sink
-    flushToPostgres(data).then(() => {
-      // console.log("[PostgreSQL] Database synchronized.");
-    }).catch((err) => {
-      console.error("[PostgreSQL] Failed flushing state update:", err);
-    });
+    // Trigger background async db sink and store in the tracker
+    pendingFlushPromise = flushToPostgres(data)
+      .then(() => {
+        // console.log("[PostgreSQL] Database synchronized.");
+      })
+      .catch((err) => {
+        console.error("[PostgreSQL] Failed flushing state update:", err);
+        throw err;
+      });
   } else {
     // Flush to local JSON fallback database
     const dbJsonPath = path.join(process.cwd(), 'data', 'db.json');
     try {
       fs.writeFileSync(dbJsonPath, JSON.stringify(data, null, 2), 'utf8');
+      pendingFlushPromise = Promise.resolve();
     } catch (err) {
       console.error("[Database_Fallback] Failed syncing cache update to data/db.json:", err);
+      pendingFlushPromise = Promise.reject(err);
     }
   }
 }
