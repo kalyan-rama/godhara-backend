@@ -75,15 +75,15 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
 
   if (!token) {
     const reason = 'No Bearer token or session user exists on headers / cookies';
-    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
-    return res.status(403).json({ message: 'Authentication required. Forbidden.', error: 'UNAUTHENTICATED' });
+    console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
+    return res.status(401).json({ message: 'Authentication required. Unauthorized.', error: 'UNAUTHENTICATED' });
   }
 
   jwt.verify(token, JWT_SECRET, (err, userPayload: any) => {
     if (err) {
       const reason = `JWT verification failed: ${err.message}`;
-      console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
-      return res.status(403).json({ message: 'Invalid or expired signature', error: err.message });
+      console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
+      return res.status(401).json({ message: 'Invalid or expired signature', error: err.message });
     }
     
     req.user = {
