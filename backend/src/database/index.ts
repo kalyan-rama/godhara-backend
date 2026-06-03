@@ -375,6 +375,8 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
       isVerified: user.isVerified 
     };
 
+    console.log(`[DEBUG Login Role Verification] Database user email: ${user.email}, Role in DB: ${user.role}`);
+
     const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
     if (isAdminRole) {
       console.log(`🛡️ [OTP SECURITY] Admin user logging in. Issuing secure OTP challenge for ${user.email} prior to generating sessions or tokens.`);
@@ -384,6 +386,7 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
       
       dbObj.logActivity(user.id, 'LOGIN_PASSWORD_VERIFIED_REDIRECT_2FA', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
 
+      console.log(`[DEBUG Login Response] Returning Admin user to frontend with requiresOtp: true, Role: ${sanitizedUser.role}`);
       return res.json({
         requiresOtp: true,
         user: sanitizedUser,
@@ -417,7 +420,7 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
         email: user.email,
         role: user.role
       };
-      console.log('[Auth Login] Session state generated for user:', user.id);
+      console.log(`[DEBUG Session Creation] Session state generated for Customer: ${user.id}, Role: ${(req.session as any).user.role}`);
     }
 
     // In production/iframe contexts, we send RefreshToken in HttpOnly secure and cross-origin SameSite cookie
@@ -852,6 +855,8 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       });
     }
 
+    console.log(`[DEBUG Google OAuth Callback] DB User: ${user.email}, Role: ${user.role}, requiresOtp: ${isAdminRole}`);
+
     res.send(
       "<html><head><title>Success Connecting</title></head>" +
       "<body style=\"font-family: sans-serif; text-align: center; padding-top: 50px; color: #6B2D0E;\">" +
@@ -1159,7 +1164,7 @@ apiRouter.post('/auth/admin-otp-verify', authRateLimiter, async (req, res) => {
       role: user.role,
       otpVerified: true
     };
-    console.log('[Auth Admin OTP Verify] Session state generated for admin:', user.id);
+    console.log(`[DEBUG OTP Verification Complete] Database Role: ${user.role}, Session Role: ${(req.session as any).user.role}`);
   }
 
   // In production/iframe contexts, we send RefreshToken in HttpOnly secure and cross-origin SameSite cookie
@@ -1171,10 +1176,13 @@ apiRouter.post('/auth/admin-otp-verify', authRateLimiter, async (req, res) => {
     maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
   });
 
+  const responseUser = { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone, address: user.address, otpVerified: true };
+  console.log(`[DEBUG OTP Verification Return] Returning User to Frontend with Role: ${responseUser.role}`);
+
   res.json({
     accessToken,
     refreshToken,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone, address: user.address, otpVerified: true }
+    user: responseUser
   });
 });
 
