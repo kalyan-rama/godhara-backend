@@ -5,8 +5,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
-import { dbObj } from '../database';
-import { generateInvoicePDF, generateShippingLabelPDF, getInvoicePath, getLabelPath } from '../services/pdf';
+import { dbObj } from '../database/index.js';
+import { generateInvoicePDF, generateShippingLabelPDF, getInvoicePath, getLabelPath } from '../services/pdf.js';
 import { 
   sendOrderConfirmationEmail, 
   sendEmailVerification, 
@@ -18,14 +18,14 @@ import {
   sendAdminNewOrderNotificationEmail,
   emailDispatchQueue,
   sendOTPEmail
-} from '../services/email';
+} from '../services/email.js';
 
 import {
   generateSecureOTP,
   getResendCooldownRemaining,
   storeOTP,
   verifyOTPCode
-} from '../services/otp';
+} from '../services/otp.js';
 
 export const apiRouter = Router();
 
