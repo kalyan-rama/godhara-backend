@@ -125,7 +125,13 @@ async function startServer() {
 
   // Serve static assets / public files (e.g. barcode results, files)
   app.use('/api-docs', express.static(path.join(process.cwd(), 'data', 'documents')));
-  app.use('/assets', express.static(path.join(process.cwd(), 'assets')));
+  app.use('/assets', (req, res, next) => {
+    const filePath = path.join(process.cwd(), 'assets', req.path);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+       return res.sendFile(filePath);
+    }
+    next();
+  });
 
   // Ensure and serve static uploaded product images directory
   const uploadsDir = path.join(process.cwd(), 'data', 'uploads');
