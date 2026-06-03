@@ -45,10 +45,11 @@ export interface AuthRequest extends Request {
 
 export function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) {
   // Add robust debug logging of session, user, and token state
-  console.log('[Auth Decision Log] URL:', req.originalUrl || req.url);
+  const currentRoute = req.originalUrl || req.url;
+  console.log('[Auth Decision Log] URL:', currentRoute);
+  console.log('[Auth Decision Log] Existing req.user:', req.user);
   console.log('[Auth Decision Log] Session ID:', req.sessionID);
   console.log('[Auth Decision Log] Session User State:', (req.session as any)?.user);
-  console.log('[Auth Decision Log] Existing req.user:', req.user);
   console.log('[Auth Decision Log] Cookies Detected:', req.headers.cookie);
   console.log('[Auth Decision Log] Auth Header Detected:', !!req.headers['authorization']);
 
@@ -60,54 +61,55 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
     return next();
   }
 
-  // 2. Check if user is authenticated via Express Session
+  // 2. Prioritize Bearer token in 'Authorization' header to prevent stale session overrides
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token) {
+    jwt.verify(token, JWT_SECRET, (err, userPayload: any) => {
+      if (err) {
+        const reason = `JWT verification failed: ${err.message}`;
+        console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${currentRoute}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
+        return res.status(401).json({ message: 'Invalid or expired signature', error: err.message });
+      }
+      
+      req.user = {
+        id: userPayload.id,
+        email: userPayload.email,
+        role: userPayload.role,
+        otpVerified: !!userPayload.otpVerified
+      };
+      console.log('[Auth Decision Log] JWT Verification success. User:', req.user);
+      
+      // Auto-propagate back to session for durability
+      if (req.session) {
+        (req.session as any).user = {
+          id: req.user.id,
+          email: req.user.email,
+          role: req.user.role,
+          otpVerified: req.user.otpVerified
+        };
+      }
+
+      // Automatically ensure an active cart exists in database
+      dbObj.getCart(req.user!.id);
+      next();
+    });
+    return;
+  }
+
+  // 3. Fallback to Express Session authentication if no Bearer token was provided
   if ((req.session as any)?.user) {
     req.user = (req.session as any).user;
-    console.log('[Auth Decision Log] Authenticated via session user:', req.user);
+    console.log('[Auth Decision Log] Authenticated via session fallback user:', req.user);
     // Automatically ensure an active cart exists in database
     dbObj.getCart(req.user!.id);
     return next();
   }
 
-  // 3. Check if user is authenticated via Bearer token
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    const reason = 'No Bearer token or session user exists on headers / cookies';
-    console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
-    return res.status(401).json({ message: 'Authentication required. Unauthorized.', error: 'UNAUTHENTICATED' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, userPayload: any) => {
-    if (err) {
-      const reason = `JWT verification failed: ${err.message}`;
-      console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${req.originalUrl || req.url}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
-      return res.status(401).json({ message: 'Invalid or expired signature', error: err.message });
-    }
-    
-    req.user = {
-      id: userPayload.id,
-      email: userPayload.email,
-      role: userPayload.role,
-      otpVerified: !!userPayload.otpVerified
-    };
-    console.log('[Auth Decision Log] JWT Verification success. User:', req.user);
-    
-    // Auto-propagate back to session for durability
-    if (req.session) {
-      (req.session as any).user = {
-        id: req.user.id,
-        email: req.user.email,
-        role: req.user.role,
-        otpVerified: req.user.otpVerified
-      };
-    }
-
-    // Automatically ensure an active cart exists in database
-    dbObj.getCart(req.user!.id);
-    next();
-  });
+  const reason = 'Authentication required but missing Bearer token or active Session state in headers/cookies';
+  console.warn(`[401 UNAUTHORIZED INTERCEPT] Route: "${currentRoute}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
+  return res.status(401).json({ message: 'Authentication required. Unauthorized.', error: 'UNAUTHENTICATED' });
 }
 
 // SECURE RBAC MIDDLEWARE
@@ -119,16 +121,25 @@ export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction
   console.log(`[Admin Role Authorization Check] Route: "${currentRoute}", UserID: "${user?.id || 'N/A'}", Email: "${user?.email || 'N/A'}", Role: "${user?.role || 'N/A'}", OTP_Verified: "${user?.otpVerified ?? 'N/A'}"`);
   console.log(`[Admin Role Authorization Check] Session details: UserID: "${sessionUser?.id || 'N/A'}", Email: "${sessionUser?.email || 'N/A'}", Role: "${sessionUser?.role || 'N/A'}", OTP_Verified: "${sessionUser?.otpVerified ?? 'N/A'}"`);
 
-  if (!user || !['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role)) {
-    const reason = 'User role is not an authorized administrative role (SUPER_ADMIN, ADMIN, MODERATOR, VIEWER)';
-    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user?.id || 'N/A'}", Email: "${user?.email || 'N/A'}", Role: "${user?.role || 'N/A'}", OTP_Verified: "${user?.otpVerified ?? 'N/A'}", Denial Reason: "${reason}"`);
-    return res.status(403).json({ message: 'Access denied: Admin panel privileges required', error: 'UNAUTHORIZED_ROLE' });
+  if (!user) {
+    const reason = 'No authenticated user available for role checks';
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
+    return res.status(403).json({ message: 'Access denied: Authentication required for admin privileges', error: 'UNAUTHENTICATED' });
   }
+
+  const allowedRoles = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'];
+  if (!allowedRoles.includes(user.role)) {
+    const reason = `Role "${user.role}" is not one of the authorized administrative roles: ${allowedRoles.join(', ')}`;
+    console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "${user.otpVerified ?? 'false'}", Denial Reason: "${reason}"`);
+    return res.status(403).json({ message: `Access denied: Admin panel privileges required. Your current role is: ${user.role}`, error: 'UNAUTHORIZED_ROLE' });
+  }
+
   if (!user.otpVerified) {
-    const reason = 'OTP is not verified for this administrative session';
+    const reason = 'MFA OTP verification is required but is currently set to false or unverified for this session';
     console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "false", Denial Reason: "${reason}"`);
-    return res.status(403).json({ message: 'Access denied: OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
+    return res.status(403).json({ message: 'Access denied: Two-Factor OTP verification is required to access administrative paths.', error: 'OTP_NOT_VERIFIED' });
   }
+
   next();
 }
 
@@ -142,16 +153,18 @@ export function requireAdminOTPVerified(req: AuthRequest, res: Response, next: N
   console.log(`[Admin OTP Authorization Check] Session details: UserID: "${sessionUser?.id || 'N/A'}", Email: "${sessionUser?.email || 'N/A'}", Role: "${sessionUser?.role || 'N/A'}", OTP_Verified: "${sessionUser?.otpVerified ?? 'N/A'}"`);
 
   if (!user) {
-    const reason = 'Authentication required but no active user session or credentials payload found on request';
+    const reason = 'Authentication payload missing on request during admin-OTP checks';
     console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "N/A", Email: "N/A", Role: "N/A", OTP_Verified: "N/A", Denial Reason: "${reason}"`);
     return res.status(403).json({ message: 'Authentication required. Access denied.', error: 'UNAUTHENTICATED' });
   }
+
   const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(user.role);
   if (isAdminRole && !user.otpVerified) {
-    const reason = 'Admin user requires multi-factor OTP verification for dashboard/administrative path access';
+    const reason = `MFA/2FA OTP is not verified for administrative role "${user.role}"`;
     console.warn(`[403 FORBIDDEN INTERCEPT] Route: "${currentRoute}", UserID: "${user.id}", Email: "${user.email}", Role: "${user.role}", OTP_Verified: "false", Denial Reason: "${reason}"`);
-    return res.status(403).json({ message: 'Access denied: OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
+    return res.status(403).json({ message: 'Access denied: Multi-Factor OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
   }
+
   next();
 }
 
