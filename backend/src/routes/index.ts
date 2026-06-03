@@ -102,11 +102,24 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
 
 // SECURE RBAC MIDDLEWARE
 export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
-  if (req.user && ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(req.user.role)) {
-    return next();
-  }
   if (!req.user || !['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(req.user.role)) {
     return res.status(403).json({ message: 'Access denied: Admin panel privileges required' });
+  }
+  if (!req.user.otpVerified) {
+    return res.status(403).json({ message: 'Access denied: OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
+  }
+  next();
+}
+
+// REQUIRE OTP VERIFIED MIDDLEWARE FOR ADMINS
+export function requireAdminOTPVerified(req: AuthRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(403).json({ message: 'Authentication required. Access denied.', error: 'UNAUTHENTICATED' });
+  }
+  const isAdminRole = ['SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'VIEWER'].includes(req.user.role);
+  if (isAdminRole && !req.user.otpVerified) {
+    console.warn(`[OTP SECURITY] Admin user ${req.user.email} attempted administrative access without verified OTP. ACCESS DENIED.`);
+    return res.status(403).json({ message: 'Access denied: OTP verification required for administrative access.', error: 'OTP_NOT_VERIFIED' });
   }
   next();
 }
@@ -137,6 +150,7 @@ export function checkWritePermissions(req: AuthRequest, res: Response, next: Nex
 
 // Mount authentication and write permission checking middleware on all admin routes
 apiRouter.use('/admin', authenticateToken);
+apiRouter.use('/admin', requireAdminOTPVerified);
 apiRouter.use('/admin', checkWritePermissions);
 
 // --- ATOMIC RATE LIMIT COUNTERS ---
