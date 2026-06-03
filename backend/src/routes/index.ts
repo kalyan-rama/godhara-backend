@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { dbObj } from '../database/index.js';
+import { uploadImageToCloud } from '../services/imageStorage.js';
 import { generateInvoicePDF, generateShippingLabelPDF, getInvoicePath, getLabelPath } from '../services/pdf.js';
 import { 
   sendOrderConfirmationEmail, 
@@ -1535,6 +1536,7 @@ apiRouter.post('/auth/refresh-token', (req, res) => {
 
 apiRouter.get('/products', (req, res) => {
   const { category, sort } = req.query;
+  console.log(`[Product Request] Fetching all products. Category Filter: "${category || 'All'}", Sort Option: "${sort || 'Default'}"`);
   let list = dbObj.getProducts().filter(p => p.isActive);
 
   // Category filtering
@@ -1552,23 +1554,32 @@ apiRouter.get('/products', (req, res) => {
     list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
+  console.log(`[Product Response] Resolved ${list.length} products successfully.`);
   res.json(list);
 });
 
 apiRouter.get('/products/featured', (req, res) => {
+  console.log('[Product Request] Fetching featured products...');
   const featured = dbObj.getProducts().filter(p => p.isActive && p.isFeatured);
+  console.log(`[Product Response] Resolved ${featured.length} featured products successfully.`);
   res.json(featured);
 });
 
 apiRouter.get('/categories', (req, res) => {
-  res.json(dbObj.getCategories());
+  console.log('[Product Request] Fetching category list...');
+  const cats = dbObj.getCategories();
+  console.log(`[Product Response] Resolved categories:`, cats);
+  res.json(cats);
 });
 
 apiRouter.get('/products/:slug', (req, res) => {
+  console.log(`[Product Request] Fetching details for slug "${req.params.slug}"...`);
   const product = dbObj.findProductBySlug(req.params.slug);
   if (!product || !product.isActive) {
+    console.warn(`[Product Response Warning] Product slug "${req.params.slug}" not found or inactive.`);
     return res.status(404).json({ message: 'Product not found' });
   }
+  console.log(`[Product Response] Success mapping slug "${req.params.slug}" to Product ID: ${product.id}`);
   res.json(product);
 });
 
@@ -2013,7 +2024,7 @@ apiRouter.get('/admin/customers', authenticateToken, requireAdmin, (req, res) =>
 });
 
 // ADMIN PERSISTENT IMAGE UPLOADER
-apiRouter.post('/admin/upload', authenticateToken, requireAdmin, (req, res) => {
+apiRouter.post('/admin/upload', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { base64, filename } = req.body;
     if (!base64) {
@@ -2022,46 +2033,10 @@ apiRouter.post('/admin/upload', authenticateToken, requireAdmin, (req, res) => {
 
     console.log(`[Upload API] Received image file save request. Original Filename: ${filename || 'unnamed'}`);
 
-    // Parse base64 Data URL format if present
-    const matches = base64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    let mimeType = 'image/jpeg';
-    let base64Data = base64;
+    const result = await uploadImageToCloud(base64, filename || 'image.jpg');
+    console.log(`[Upload API] Stored product image successfully. Resolved URL: ${result.url}`);
 
-    if (matches && matches.length === 3) {
-      mimeType = matches[1];
-      base64Data = matches[2];
-    } else if (base64.includes(';base64,')) {
-      const parts = base64.split(';base64,');
-      base64Data = parts[1];
-      const mimePart = parts[0].split(':');
-      if (mimePart.length > 1) {
-        mimeType = mimePart[1];
-      }
-    }
-
-    // Determine safe extension based on mimeType
-    let extension = 'jpg';
-    if (mimeType.includes('png')) extension = 'png';
-    else if (mimeType.includes('webp')) extension = 'webp';
-    else if (mimeType.includes('svg')) extension = 'svg';
-    else if (mimeType.includes('gif')) extension = 'gif';
-
-    const buffer = Buffer.from(base64Data, 'base64');
-    
-    // Generate clean safe timestamped filename
-    const cleanName = filename
-      ? filename.replace(/[^a-zA-Z0-9.\-_]/g, '_')
-      : `image_${Date.now()}`;
-    const baseName = cleanName.includes('.') ? cleanName.substring(0, cleanName.lastIndexOf('.')) : cleanName;
-    const finalFilename = `img_${Date.now()}_${baseName}.${extension}`;
-
-    const uploadPath = path.join(process.cwd(), 'data', 'uploads', finalFilename);
-    const relativeUrl = `/uploads/${finalFilename}`;
-
-    fs.writeFileSync(uploadPath, buffer);
-    console.log(`[Upload API] Live saved file. Path: "${uploadPath}" | URL: "${relativeUrl}"`);
-
-    res.json({ url: relativeUrl });
+    res.json({ url: result.url });
   } catch (err: any) {
     console.error('[Upload API] Fatal error inside server-side upload:', err);
     res.status(500).json({ message: 'Fatal exception synchronizing image file data', error: err.message });
@@ -2126,10 +2101,13 @@ apiRouter.put('/admin/products/:id', authenticateToken, requireAdmin, (req, res)
 });
 
 apiRouter.delete('/admin/products/:id', authenticateToken, requireAdmin, (req, res) => {
+  console.log(`[Product API] ARCHIVING/DELETING product ID: ${req.params.id}`);
   const success = dbObj.deleteProduct(req.params.id);
   if (!success) {
+    console.warn(`[Product API] Archive failed: Product ID ${req.params.id} not found.`);
     return res.status(404).json({ message: 'Target product not found to delete' });
   }
+  console.log(`[Product API] ARCHIVED/DELETED product ID: ${req.params.id} successfully.`);
   res.json({ message: 'Product successfully archived / soft-deleted' });
 });
 
