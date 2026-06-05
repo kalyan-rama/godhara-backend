@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx backend/src/server.ts",
-    "build": "esbuild backend/src/server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js",
+    "dev": "tsx src/server.ts",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js",
     "start": "node dist/server.js",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
