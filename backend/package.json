@@ -3,13 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "tsx backend/src/server.ts",
-    "build": "esbuild backend/src/server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js",
-    "start": "node dist/server.js",
-    "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
-  },
+"scripts": {
+  "dev": "tsx backend/src/server.ts",
+  "build": "esbuild ./backend/src/server.ts --bundle --platform=node --format=esm --sourcemap --outfile=dist/server.js",
+  "start": "node dist/server.js",
+  "clean": "rm -rf dist",
+  "lint": "tsc --noEmit"
+},
   "dependencies": {
     "@google/genai": "^2.4.0",
     "bcryptjs": "^3.0.3",
