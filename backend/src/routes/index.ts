@@ -948,41 +948,47 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
 
     console.log(`[DEBUG Google OAuth Callback] DB User: ${user.email}, Role: ${user.role}, requiresOtp: ${isAdminRole}`);
 
-    res.send(
-      "<html><head><title>Success Connecting</title></head>" +
-      "<body style=\"font-family: sans-serif; text-align: center; padding-top: 50px; color: #6B2D0E;\">" +
-      "<h2>Google Sign-In Successful</h2>" +
-      "<p>Authenticating your session, this popup window will close automatically...</p>" +
-      "<script>" +
-      "if (window.opener) {" +
-      "  window.opener.postMessage({" +
-      "    type: 'OAUTH_AUTH_SUCCESS'," +
-      "    requiresOTP: " + JSON.stringify(isAdminRole) + ", +
-      "    accessToken: " + JSON.stringify(accessToken || null) + "," +
-      "    refreshToken: " + JSON.stringify(refreshToken || null) + "," +
-      "    user: " + JSON.stringify({
-             id: user.id,
-             name: user.name,
-             email: user.email,
-             role: user.role,
-             googleAvatar: user.googleAvatar,
-             phone: user.phone || '',
-             address: user.address,
-             isVerified: true
-           }) + "" +
-      "  }, '*');" +
-      "  window.close();" +
-      "} else {" +
-      "  window.location.href = '" + (isAdminRole ? '/login?requiresOTP=true&email=' + encodeURIComponent(user.email) : '/dashboard#token=' + encodeURIComponent(accessToken)) + "';" +
-      "}" +
-      "</script></body></html>"
-    );
-  } catch (err: any) {
-    console.error('OAuth Callback failure:', err);
-    res.status(500).send("<h2>Google Authentication Failed</h2><p>" + err.message + "</p>");
-  }
-});
+ res.send(`
+<html>
+<head>
+<title>Success Connecting</title>
+</head>
+<body style="font-family:sans-serif;text-align:center;padding-top:50px;color:#6B2D0E;">
+<h2>Google Sign-In Successful</h2>
+<p>Authenticating your session, this popup window will close automatically...</p>
 
+<script>
+if (window.opener) {
+  window.opener.postMessage({
+    type: 'OAUTH_AUTH_SUCCESS',
+    requiresOTP: ${JSON.stringify(isAdminRole)},
+    accessToken: ${JSON.stringify(accessToken || null)},
+    refreshToken: ${JSON.stringify(refreshToken || null)},
+    user: ${JSON.stringify({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      googleAvatar: user.googleAvatar,
+      phone: user.phone || '',
+      address: user.address,
+      isVerified: true
+    })}
+  }, '*');
+
+  window.close();
+} else {
+  window.location.href = '${
+    isAdminRole
+      ? `/login?requiresOTP=true&email=${encodeURIComponent(user.email)}`
+      : `/dashboard#token=${encodeURIComponent(accessToken)}`
+  }';
+}
+</script>
+
+</body>
+</html>
+`);
 // 3. POST /api/auth/google/token -> Endpoint for Google direct token verification (one tap or inline)
 apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
   const { credential } = req.body;
