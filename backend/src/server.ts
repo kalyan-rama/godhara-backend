@@ -127,23 +127,25 @@ async function startServer() {
   }
 
   // Production: serve built frontend from dist/
-  if (isProduction) {
-  console.log('🚀 Backend-only mode');
-}
-  } else {
-    // Dev: Vite middleware
-    try {
-      const { createServer: createViteServer } = await import('vite');
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: 'spa',
-      });
-      app.use(vite.middlewares);
-      console.log('⚡ Vite dev middleware active');
-    } catch (err: any) {
-      console.warn('[Vite] Could not start dev middleware:', err?.message);
-    }
+// Production: backend only
+if (isProduction) {
+  console.log('🚀 Backend API mode');
+} else {
+  // Dev: Vite middleware
+  try {
+    const { createServer: createViteServer } = await import('vite');
+
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+
+    app.use(vite.middlewares);
+    console.log('⚡ Vite dev middleware active');
+  } catch (err: any) {
+    console.warn('[Vite] Could not start dev middleware:', err?.message);
   }
+}
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Godhara server running at http://localhost:${PORT}`);
