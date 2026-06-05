@@ -30,6 +30,11 @@ import {
 
 export const apiRouter = Router();
 
+// Health check — for Render / uptime monitors
+apiRouter.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 const JWT_SECRET = process.env.JWT_SECRET || 'gdh-secret-primary-8978038932-traditional-spirit';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'gdh-secret-refresh-918978038932-traditional-spirit';
 
@@ -453,9 +458,9 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
       
       dbObj.logActivity(user.id, 'LOGIN_PASSWORD_VERIFIED_REDIRECT_2FA', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
 
-      console.log(`[DEBUG Login Response] Returning Admin user to frontend with requiresOtp: true, Role: ${sanitizedUser.role}`);
+      console.log(`[DEBUG Login Response] Returning Admin user to frontend with requiresOTP: true, Role: ${sanitizedUser.role}`);
       return res.json({
-        requiresOtp: true,
+        requiresOTP: true,
         user: sanitizedUser,
         message: '🛡️ Multi-Factor OTP Verification required for administrator accounts. Your secure single-use passcode has been sent to your email.'
       });
@@ -952,7 +957,7 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       "if (window.opener) {" +
       "  window.opener.postMessage({" +
       "    type: 'OAUTH_AUTH_SUCCESS'," +
-      "    requiresOtp: " + JSON.stringify(isAdminRole) + "," +
+      "    requiresOTP: " + JSON.stringify(isAdminRole) + ", +
       "    accessToken: " + JSON.stringify(accessToken || null) + "," +
       "    refreshToken: " + JSON.stringify(refreshToken || null) + "," +
       "    user: " + JSON.stringify({
@@ -968,7 +973,7 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
       "  }, '*');" +
       "  window.close();" +
       "} else {" +
-      "  window.location.href = '" + (isAdminRole ? '/login?requiresOtp=true&email=' + encodeURIComponent(user.email) : '/dashboard#token=' + encodeURIComponent(accessToken)) + "';" +
+      "  window.location.href = '" + (isAdminRole ? '/login?requiresOTP=true&email=' + encodeURIComponent(user.email) : '/dashboard#token=' + encodeURIComponent(accessToken)) + "';" +
       "}" +
       "</script></body></html>"
     );
@@ -1119,7 +1124,7 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
       dbObj.logActivity(user.id, 'OTP_SENT_ADMIN_GOOGLE_TOKEN_CHALLENGE', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
       
       return res.json({
-        requiresOtp: true,
+        requiresOTP: true,
         user: {
           id: user.id,
           name: user.name,
@@ -1130,7 +1135,7 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
           address: user.address,
           isVerified: true
         },
-        message: '🛡️ Multi-Factor OTP Verification required for administrator accounts. A secure single-use passcode has been sent to your email.'
+        message: '🛡️ Multi-Factor OTP Verification required for administrator accounts. Your secure single-use passcode has been sent to your email.'
       });
     }
 
@@ -1693,6 +1698,13 @@ apiRouter.delete('/cart/:itemId', authenticateToken, (req: AuthRequest, res) => 
   res.json(cart.items);
 });
 
+// DELETE /api/cart — clear ALL items from cart
+apiRouter.delete('/cart', authenticateToken, (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  dbObj.saveCart(userId, []);
+  res.json([]);
+});
+
 // ==========================================
 // 4. ORDERS & CONFIRMATION & RAZORPAY PAYMENT VERIFICATION
 // ==========================================
@@ -2105,13 +2117,13 @@ apiRouter.post('/admin/upload', authenticateToken, requireAdmin, async (req, res
 
 // PRODUCT MANAGEMENT: CRUD OPERATIONS
 apiRouter.post('/admin/products', authenticateToken, requireAdmin, (req, res) => {
-  const { name, description, price, discountPrice, stock, category, weight, images, isFeatured } = req.body;
+  const { name, description, price, discountPrice, stock, category, weight, images, imagePublicIds, isFeatured } = req.body;
 
   if (!name || !price || stock === undefined || !category || !weight) {
     return res.status(400).json({ message: 'Name, price, stock, category, and weight parameters are required' });
   }
 
-  console.log(`[Product API] CREATING product. Name: "${name}". Images parsed:`, images);
+  console.log(`[Product API] CREATING product. Name: "${name}". Images:`, images);
 
   const created = dbObj.createProduct({
     name,
@@ -2122,6 +2134,7 @@ apiRouter.post('/admin/products', authenticateToken, requireAdmin, (req, res) =>
     category,
     weight: parseInt(weight),
     images: images || [],
+    imagePublicIds: imagePublicIds || [],
     isFeatured: !!isFeatured
   });
 
@@ -2158,6 +2171,11 @@ apiRouter.put('/admin/products/:id', authenticateToken, requireAdmin, async (req
         await deleteImageFromCloud(publicId);
       }
     }
+  }
+
+  // Save imagePublicIds if provided
+  if (updates.imagePublicIds && Array.isArray(updates.imagePublicIds)) {
+    // Already stored in updates
   }
 
   // Typecasting
