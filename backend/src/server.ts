@@ -16,147 +16,128 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
- 
-  // Await active database schema and caches check before handling traffic
+
+  // Trust first proxy (Render/Vercel proxy headers)
+  app.set('trust proxy', 1);
+
+  // CORS — allow Vercel frontend and localhost dev
+  const allowedOrigins = [
+    'https://godhara-fronted.vercel.app',
+    'https://godhara-frontend.vercel.app',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+  ];
+  // Also support any FRONTEND_URL env var set in Render dashboard
+  if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL);
+  }
+
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow server-to-server (no origin) and all allowed origins
+      if (!origin || allowedOrigins.includes(origin) || origin.includes('vercel.app') || origin.includes('localhost')) {
+        callback(null, true);
+      } else {
+        // In production, still allow but log unknown origins
+        console.warn(`[CORS] Unknown origin allowed: ${origin}`);
+        callback(null, true);
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  }));
+
+  // Body parsing
+  app.use(express.json({ limit: '20mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+  // Session configuration — secure cookies for production
+  const isProduction = process.env.NODE_ENV === 'production';
+  app.use(session({
+    secret: process.env.SESSION_SECRET || 'godhara-secret-session-key-2026-change-in-prod',
+    resave: false,
+    saveUninitialized: false,
+    name: 'gdh.sid',
+    cookie: {
+      secure: isProduction,
+      httpOnly: true,
+      sameSite: isProduction ? 'none' : 'lax',
+      maxAge: 2 * 60 * 60 * 1000, // 2 hours
+    },
+  }));
+
+  // DB init middleware — wait for DB before handling traffic
   app.use(async (req, res, next) => {
     try {
       await dbInitializationPromise;
 
-      // Reload cache for read paths to ensure multi-instance writes are fetched fresh from Postgres
+      // Reload cache for read paths
       if (req.method === 'GET' || req.path.includes('/products') || req.path.includes('/orders')) {
         await reloadCache();
       }
 
-      // Intercept response methods to ensure pending database flushes complete before response completes.
-      // This is vital for serverless (like Vercel) where background threads freeze immediately when request finishes!
-      const originalJson = res.json;
-      const originalSend = res.send;
-      const originalSendStatus = res.sendStatus;
+      // Intercept response to flush DB before sending
+      const originalJson = res.json.bind(res);
+      const originalSend = res.send.bind(res);
 
       res.json = function (body: any) {
-        getPendingFlushPromise().then(() => {
-          originalJson.call(res, body);
-        }).catch((err) => {
-          console.error('[PostgreSQL Interceptor] Delay flush failed:', err);
-          originalJson.call(res, body);
-        });
+        getPendingFlushPromise()
+          .then(() => originalJson(body))
+          .catch(() => originalJson(body));
         return res;
       };
 
       res.send = function (body: any) {
-        getPendingFlushPromise().then(() => {
-          originalSend.call(res, body);
-        }).catch((err) => {
-          console.error('[PostgreSQL Interceptor] Delay flush failed:', err);
-          originalSend.call(res, body);
-        });
-        return res;
-      };
-
-      res.sendStatus = function (statusCode: number) {
-        getPendingFlushPromise().then(() => {
-          originalSendStatus.call(res, statusCode);
-        }).catch((err) => {
-          console.error('[PostgreSQL Interceptor] Delay flush failed:', err);
-          originalSendStatus.call(res, statusCode);
-        });
+        getPendingFlushPromise()
+          .then(() => originalSend(body))
+          .catch(() => originalSend(body));
         return res;
       };
 
       next();
     } catch (err: any) {
-      console.error("[PostgreSQL Engine Initialization/Sync Middleware Error] Logging trace:", err);
-      res.status(500).json({ error: "Database failed to process cache sync. Please inspect connection logs." });
+      console.error('[DB Init Middleware Error]', err);
+      res.status(500).json({ error: 'Database initialization failed' });
     }
   });
 
-  // Trust first proxy for secure cookie delivery on proxy headers
-  app.set('trust proxy', 1);
-
-  // Robust CORS and Cross-Origin Sharing Policy Middleware for iframe and deployment compatibility
-  app.use(cors({
-    origin: (origin, callback) => {
-      // If no origin (such as server-side requests, curl, or standard iframe sandboxes), allow it
-      if (!origin || 
-          origin === 'https://godhara-fronted.vercel.app' || 
-          origin === 'https://godhara-frontend.vercel.app' ||
-          origin.includes('localhost') || 
-          origin.includes('127.0.0.1') || 
-          origin.includes('run.app') ||
-          origin.includes('aistudio')) {
-        callback(null, true);
-      } else {
-        // Fallback to allow connection with credentials for safety, but log it
-        callback(null, true);
-      }
-    },
-    credentials: true
-  }));
-
-  // Middleware for parsing requests
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
-
-  // Configure express-session for robust state persistence and secure cookies
-  app.use(session({
-    secret: process.env.SESSION_SECRET || 'godhara-secret-session-key-2026',
-    resave: false,
-    saveUninitialized: true,
-    name: 'gdh.sid',
-    cookie: {
-      secure: false, // Default fallback
-      httpOnly: true,
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 1000 // 1 hour active lifetime
-    }
-  }));
-
-  // Dynamically configure session cookies based on SSL termination to support iframe embedding
-  app.use((req, res, next) => {
-    const isSec = req.secure || req.headers['x-forwarded-proto'] === 'https';
-    if (isSec) {
-      req.session.cookie.secure = true;
-      req.session.cookie.sameSite = 'none';
-    } else {
-      req.session.cookie.secure = false;
-      req.session.cookie.sameSite = 'lax';
-    }
-    next();
-  });
-
-  // API router goes FIRST
+  // API routes
   app.use('/api', apiRouter);
 
-  // Serve static assets / public files (e.g. barcode results, files)
-  app.use('/api-docs', express.static(path.join(process.cwd(), 'data', 'documents')));
+  // Serve static assets (logo, etc.)
   app.use('/assets', (req, res, next) => {
-    // Try multiple possible paths to locate the assets folder robustly
     const pathsToTry = [
       path.join(process.cwd(), 'assets', req.path),
       path.join(__dirname, '..', 'assets', req.path),
-      path.join(__dirname, 'assets', req.path),
-      path.join(process.cwd(), '..', 'assets', req.path)
     ];
-
     for (const filePath of pathsToTry) {
       if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-        console.log(`[Assets Router] Serving static asset: "${filePath}"`);
         return res.sendFile(filePath);
       }
     }
-
-    console.warn(`[Assets Router 404] Static asset not found in any resolved paths for req.path: "${req.path}"`);
     next();
   });
 
-  // Serving local uploads legacy static directory only if it exists
-  const uploadsDir = path.join(process.cwd(), 'data', 'uploads');
-  if (fs.existsSync(uploadsDir)) {
-    app.use('/uploads', express.static(uploadsDir));
+  // Serve public folder (logo.png etc.)
+  const publicDir = path.join(process.cwd(), 'public');
+  if (fs.existsSync(publicDir)) {
+    app.use(express.static(publicDir));
   }
 
-  // Vite middleware integration for asset pipelines
-  if (process.env.NODE_ENV !== 'production') {
+  // Production: serve built frontend from dist/
+  if (isProduction) {
+    const distPath = path.join(process.cwd(), 'dist');
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+      console.log('📦 Serving production build from dist/');
+    }
+  } else {
+    // Dev: Vite middleware
     try {
       const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
@@ -164,25 +145,20 @@ async function startServer() {
         appType: 'spa',
       });
       app.use(vite.middlewares);
-      console.log('⚡ Running development server with active Vite middleware');
+      console.log('⚡ Vite dev middleware active');
     } catch (err: any) {
-      console.error('❌ Failed to integrate Vite development middleware:', err?.message || err);
+      console.warn('[Vite] Could not start dev middleware:', err?.message);
     }
-  } else {
-    // Production serving from client dist directory
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-    console.log('📦 Running production build server');
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Godhara server started at http://localhost:${PORT}`);
+    console.log(`🚀 Godhara server running at http://localhost:${PORT}`);
+    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? '✅ Configured' : '⚠️  Not configured (set CLOUDINARY_CLOUD_NAME)'}`);
   });
 }
 
-startServer().catch((err) => {
-  console.error('❌ Failed to boot Godhara full-stack cluster server:', err);
+startServer().catch(err => {
+  console.error('❌ Server startup failed:', err);
+  process.exit(1);
 });
