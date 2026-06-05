@@ -397,13 +397,23 @@ export async function flushToPostgres(data: any) {
               weight = EXCLUDED.weight,
               "updatedAt" = EXCLUDED."updatedAt"
             RETURNING (xmax = 0) AS is_insert`,
-            [
-              p.id, p.name, p.slug, p.description || '', p.price, p.discountPrice, p.stock || 0,
-              p.category, JSON.stringify(p.images || []), JSON.stringify(p.imagePublicIds || []),
-              !!p.isFeatured, !!p.isActive, p.weight, p.createdAt, p.updatedAt
-          ]), Boolean(p.isFeatured), Boolean(p.isActive),
-              p.weight, p.createdAt, p.updatedAt
-            ]
+           [
+  p.id,
+  p.name,
+  p.slug,
+  p.description || '',
+  p.price,
+  p.discountPrice,
+  p.stock || 0,
+  p.category,
+  JSON.stringify(p.images || []),
+  JSON.stringify(p.imagePublicIds || []),
+  Boolean(p.isFeatured),
+  Boolean(p.isActive),
+  p.weight,
+  p.createdAt,
+  p.updatedAt
+]
           );
           if (res.rows && res.rows[0] && res.rows[0].is_insert) {
             insertCount++;
