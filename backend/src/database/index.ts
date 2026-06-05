@@ -129,7 +129,7 @@ export async function ensureSchema() {
       CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
       CREATE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
       CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
-      CREATE INDEX IF NOT EXISTS idx_orders_userid ON orders(userid);
+      CREATE INDEX IF NOT EXISTS idx_orders_userid ON orders("userId");
       CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
       CREATE TABLE IF NOT EXISTS activity_logs (
