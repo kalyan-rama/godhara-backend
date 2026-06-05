@@ -115,8 +115,22 @@ export async function ensureSchema() {
         "freeShippingThreshold" NUMERIC,
         "flatShippingCharge" NUMERIC,
         "announcementText" TEXT,
-        "lowStockThreshold" INT
+        "lowStockThreshold" INT,
+        "deliveryChargeTelangana" NUMERIC DEFAULT 70,
+        "deliveryChargeAP" NUMERIC DEFAULT 80,
+        "deliveryChargeOther" NUMERIC DEFAULT 100,
+        "freeDeliveryPincodes" TEXT DEFAULT '[]',
+        "storeLocations" TEXT DEFAULT '[]',
+        "storeServicePincodes" TEXT DEFAULT '[]'
       );
+
+      -- Performance indexes
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+      CREATE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
+      CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+      CREATE INDEX IF NOT EXISTS idx_orders_userid ON orders(userid);
+      CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
       CREATE TABLE IF NOT EXISTS activity_logs (
         id VARCHAR(512) PRIMARY KEY,
@@ -213,7 +227,18 @@ export async function loadFromPostgres() {
 
     const resSettings = await client.query('SELECT * FROM settings WHERE id = $1', ['global']);
     if (resSettings.rows.length > 0) {
-      data.settings = parseNumericFields(resSettings.rows[0]);
+      const s = parseNumericFields(resSettings.rows[0]);
+      // Parse JSON string fields back to arrays
+      if (typeof s.freeDeliveryPincodes === 'string') {
+        try { s.freeDeliveryPincodes = JSON.parse(s.freeDeliveryPincodes); } catch { s.freeDeliveryPincodes = []; }
+      }
+      if (typeof s.storeLocations === 'string') {
+        try { s.storeLocations = JSON.parse(s.storeLocations); } catch { s.storeLocations = []; }
+      }
+      if (typeof s.storeServicePincodes === 'string') {
+        try { s.storeServicePincodes = JSON.parse(s.storeServicePincodes); } catch { s.storeServicePincodes = []; }
+      }
+      data.settings = s;
     } else {
       data.settings = {
         storeName: 'Godhara',
@@ -227,7 +252,13 @@ export async function loadFromPostgres() {
         freeShippingThreshold: 1000,
         flatShippingCharge: 50,
         announcementText: 'Shop ₹1000 to Get Free Shipping',
-        lowStockThreshold: 10
+        lowStockThreshold: 10,
+        deliveryChargeTelangana: 70,
+        deliveryChargeAP: 80,
+        deliveryChargeOther: 100,
+        freeDeliveryPincodes: [],
+        storeLocations: [],
+        storeServicePincodes: []
       };
     }
 
@@ -292,8 +323,10 @@ export async function flushToPostgres(data: any) {
           `INSERT INTO settings (
             id, "storeName", "logoUrl", "founderImageUrl", "founderName", "founderQuote", 
             "contactEmail", address, phone, "freeShippingThreshold", "flatShippingCharge", 
-            "announcementText", "lowStockThreshold"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            "announcementText", "lowStockThreshold",
+            "deliveryChargeTelangana", "deliveryChargeAP", "deliveryChargeOther",
+            "freeDeliveryPincodes", "storeLocations", "storeServicePincodes"
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
           ON CONFLICT (id) DO UPDATE SET
             "storeName" = EXCLUDED."storeName",
             "logoUrl" = EXCLUDED."logoUrl",
@@ -306,7 +339,13 @@ export async function flushToPostgres(data: any) {
             "freeShippingThreshold" = EXCLUDED."freeShippingThreshold",
             "flatShippingCharge" = EXCLUDED."flatShippingCharge",
             "announcementText" = EXCLUDED."announcementText",
-            "lowStockThreshold" = EXCLUDED."lowStockThreshold"`,
+            "lowStockThreshold" = EXCLUDED."lowStockThreshold",
+            "deliveryChargeTelangana" = EXCLUDED."deliveryChargeTelangana",
+            "deliveryChargeAP" = EXCLUDED."deliveryChargeAP",
+            "deliveryChargeOther" = EXCLUDED."deliveryChargeOther",
+            "freeDeliveryPincodes" = EXCLUDED."freeDeliveryPincodes",
+            "storeLocations" = EXCLUDED."storeLocations",
+            "storeServicePincodes" = EXCLUDED."storeServicePincodes"`,
           [
             'global',
             data.settings.storeName,
@@ -320,7 +359,13 @@ export async function flushToPostgres(data: any) {
             data.settings.freeShippingThreshold,
             data.settings.flatShippingCharge,
             data.settings.announcementText,
-            data.settings.lowStockThreshold
+            data.settings.lowStockThreshold,
+            data.settings.deliveryChargeTelangana ?? 70,
+            data.settings.deliveryChargeAP ?? 80,
+            data.settings.deliveryChargeOther ?? 100,
+            JSON.stringify(data.settings.freeDeliveryPincodes ?? []),
+            JSON.stringify(data.settings.storeLocations ?? []),
+            JSON.stringify(data.settings.storeServicePincodes ?? [])
           ]
         );
         console.log('[Database Sync] Synchronized settings.');
