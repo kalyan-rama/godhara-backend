@@ -989,6 +989,26 @@ if (window.opener) {
 </body>
 </html>
 `);
+} catch (error: any) {
+  console.error('[Google OAuth Callback Error]', error);
+
+  return res.send(
+    "<html><body><script>" +
+    "if(window.opener){" +
+    "window.opener.postMessage({" +
+    "type:'OAUTH_AUTH_FAILURE'," +
+    "message:" + JSON.stringify(error.message || 'Google authentication failed') +
+    "}, '*');" +
+    "window.close();" +
+    "}else{" +
+    "window.location.href='/login?error=' + encodeURIComponent(" +
+    JSON.stringify(error.message || 'Google authentication failed') +
+    ");" +
+    "}" +
+    "</script></body></html>"
+  );
+}
+});
 // 3. POST /api/auth/google/token -> Endpoint for Google direct token verification (one tap or inline)
 apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
   const { credential } = req.body;
