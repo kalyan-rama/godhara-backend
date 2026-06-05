@@ -14,7 +14,7 @@ export const emailDispatchQueue: Array<{
 
 // Helper to determine from address dynamically
 function getFromAddress(): string {
-  return process.env.FROM_EMAIL || 'noreply@nexakite.shop';
+  return process.env.FROM_EMAIL || 'Godhara <onboarding@resend.dev>';
 }
 
 // Resend HTTP API Client implementation using native global fetch
@@ -125,7 +125,7 @@ function queueEmail(to: string, type: string, mailOptions: any) {
 // Global brand elements referencing process.env dynamically to avoid any hardcoded fallback domains
 const brandHeaderHtml = `
   <div style="text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 20px; margin-bottom: 25px;">
-    <img src="${process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000'}/assets/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
+    <img src="https://godhara-fronted.vercel.app/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
     <h1 style="color: #6B2D0E; font-size: 26px; margin: 0 0 5px 0; font-family: 'Georgia', serif; font-weight: bold;">గోధార - Godhara</h1>
     <p style="margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #E8820C; font-weight: bold;">Traditional Ayurvedic Purities & Gau Seva</p>
   </div>
