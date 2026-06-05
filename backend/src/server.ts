@@ -128,14 +128,8 @@ async function startServer() {
 
   // Production: serve built frontend from dist/
   if (isProduction) {
-    const distPath = path.join(process.cwd(), 'dist');
-    if (fs.existsSync(distPath)) {
-      app.use(express.static(distPath));
-      app.get('*', (_req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
-      console.log('📦 Serving production build from dist/');
-    }
+  console.log('🚀 Backend-only mode');
+}
   } else {
     // Dev: Vite middleware
     try {
