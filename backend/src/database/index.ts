@@ -161,6 +161,17 @@ export async function ensureSchema() {
       CREATE TABLE IF NOT EXISTS categories (
         name TEXT PRIMARY KEY
       );
+
+      -- OTP authentication logs table
+      CREATE TABLE IF NOT EXISTS otp_logs (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL,
+        action TEXT NOT NULL,
+        ip TEXT,
+        success BOOLEAN DEFAULT FALSE,
+        timestamp TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_otp_logs_email ON otp_logs(email);
     `);
     // Add imagePublicIds column if missing (migration for existing DBs)
     await client.query(`
