@@ -25,7 +25,10 @@ import {
   generateSecureOTP,
   getResendCooldownRemaining,
   storeOTP,
-  verifyOTPCode
+  verifyOTPCode,
+  storePendingSignup,
+  consumePendingSignup,
+  hasPendingSignup
 } from '../services/otp.js';
 
 export const apiRouter = Router();
@@ -255,6 +258,7 @@ apiRouter.get('/auth/check-verification', async (req, res) => {
   res.json({ isVerified: !!user?.isVerified });
 });
 
+// POST /auth/register — Step 1: Validate data, store temporarily, send OTP. Does NOT create account yet.
 apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
   const { name, email, password, confirmPassword, phone, address } = req.body;
 
@@ -269,14 +273,15 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
   // Password strength validation: min 8 chars, 1 uppercase, 1 number, 1 symbol
   const pwdRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
   if (!pwdRegex.test(password)) {
-    return res.status(400).json({ 
-      message: 'Password strength violation. Must have at least 8 characters, containing at least 1 uppercase letter, 1 number digits, and 1 special symbol.' 
+    return res.status(400).json({
+      message: 'Password strength violation. Must have at least 8 characters, containing at least 1 uppercase letter, 1 number digits, and 1 special symbol.'
     });
   }
 
   const existing = dbObj.findUserByEmail(email);
   if (existing && !existing.deletedAt) {
     if (existing.googleId && !existing.passwordHash) {
+      // Google-only account upgrading with a password — handle immediately
       try {
         const passwordHash = await bcrypt.hash(password, 12);
         const updated = dbObj.updateUser(existing.id, {
@@ -287,7 +292,7 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
         });
         dbObj.logActivity(updated.id, 'ACCOUNT_UPGRADE_WITH_PASSWORD', req.ip || 'unknown', req.headers['user-agent'] || 'unknown');
         return res.status(201).json({
-          message: 'Sacred Account upgraded successfully! Your Google login now has a password. You can now choose to log in with either Google or local credentials.'
+          message: 'Account upgraded successfully! Your Google login now has a password. You can now log in with either Google or local credentials.'
         });
       } catch (err: any) {
         return res.status(500).json({ message: 'Registration upgrade failed', error: err.message });
@@ -296,32 +301,100 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
     return res.status(400).json({ message: 'An account with this email address is already registered.' });
   }
 
+  // Check resend cooldown for OTP
+  const cooldownSec = getResendCooldownRemaining(email);
+  if (cooldownSec > 0) {
+    return res.status(429).json({
+      message: `Please wait ${cooldownSec} seconds before requesting another OTP.`,
+      cooldownSeconds: cooldownSec
+    });
+  }
+
   try {
     const passwordHash = await bcrypt.hash(password, 12);
-    
-    // Auto design default role: first ever user is Super Admin for dashboard exploration/evaluation convenience; rest are CUSTOMER!
+
+    // Store signup data temporarily — account is NOT created yet
+    storePendingSignup(email, {
+      name,
+      email,
+      passwordHash,
+      phone,
+      address: address || { street: '', city: '', state: '', pincode: '' }
+    });
+
+    // Generate and send OTP
+    const otp = generateSecureOTP();
+    storeOTP(email, otp);
+    await sendOTPEmail(email, name, otp);
+
+    console.log(`[SIGNUP OTP] OTP sent to ${email} for pre-registration verification`);
+
+    return res.status(200).json({
+      requiresOTP: true,
+      email,
+      message: '✅ Verify your OTP to complete registration. A 6-digit code has been sent to your email. It expires in 10 minutes.'
+    });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Registration initiation failed', error: err.message });
+  }
+});
+
+// POST /auth/register/verify-otp — Step 2: Verify OTP, create account, issue tokens.
+apiRouter.post('/auth/register/verify-otp', authRateLimiter, async (req, res) => {
+  const { email, code } = req.body;
+
+  if (!email || !code) {
+    return res.status(400).json({ message: 'Email and OTP code are required.' });
+  }
+
+  // Check OTP
+  const otpResult = verifyOTPCode(email, code);
+  if (otpResult.success === false) {
+    if (otpResult.reason === 'NOT_FOUND' || otpResult.reason === 'EXPIRED') {
+      return res.status(400).json({ message: 'Your OTP has expired or was not requested. Please start the registration again.' });
+    }
+    if (otpResult.reason === 'MAX_ATTEMPTS_EXCEEDED') {
+      return res.status(400).json({ message: 'Maximum attempts exceeded. Your OTP has been invalidated. Please start registration again.' });
+    }
+    return res.status(400).json({ message: `Incorrect OTP. Attempts remaining: ${otpResult.attemptsRemaining}` });
+  }
+
+  // Retrieve and consume pending signup data
+  const pending = consumePendingSignup(email);
+  if (!pending) {
+    return res.status(400).json({ message: 'Signup session expired or not found. Please start registration again.' });
+  }
+
+  // Re-check that email is still not taken (edge case: concurrent registration)
+  const existing = dbObj.findUserByEmail(email);
+  if (existing && !existing.deletedAt) {
+    return res.status(400).json({ message: 'An account with this email address was already created.' });
+  }
+
+  try {
+    // Determine initial role
     const usersCount = dbObj.getUsers().length;
     let initialRole: 'SUPER_ADMIN' | 'CUSTOMER' = 'CUSTOMER';
     if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'kalyanvasantham906@gmail.com')) {
       initialRole = 'SUPER_ADMIN';
     }
 
+    // Create account only after OTP verification
     const user = dbObj.createUser({
-      name,
-      email,
-      passwordHash,
-      phone,
+      name: pending.name,
+      email: pending.email,
+      passwordHash: pending.passwordHash,
+      phone: pending.phone,
       role: initialRole,
-      isVerified: true, // Instant access — no email verification gate
+      isVerified: true,
       isBanned: false,
       failedLoginAttempts: 0,
       lockUntil: null,
       passwordHistory: [],
-      address: address || { street: '', city: '', state: '', pincode: '' }
+      address: pending.address
     });
 
-    // Generate tokens immediately so the user is logged in right away
-    const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+    // Generate tokens
     const accessToken = jwt.sign(
       { id: user.id, email: user.email, role: user.role, otpVerified: initialRole === 'CUSTOMER' },
       JWT_SECRET,
@@ -329,17 +402,37 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
     );
     const refreshToken = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '7d' }
+      JWT_REFRESH_SECRET,
+      { expiresIn: '30d' }
     );
 
-    // Logging Activity Log
-    dbObj.logActivity(user.id, 'SIGNUP', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
-      method: 'Email Instant Registration'
+    // Create session
+    if (req.session) {
+      (req.session as any).user = {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        otpVerified: initialRole === 'CUSTOMER'
+      };
+    }
+
+    // Set refresh token cookie
+    const isSec = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    res.cookie('token_family', refreshToken, {
+      httpOnly: true,
+      secure: isSec,
+      sameSite: isSec ? 'none' : 'lax',
+      maxAge: 30 * 24 * 60 * 60 * 1000
     });
 
-    // Send welcome email asynchronously (non-blocking)
-    sendWelcomeEmail(email, name).catch(() => {});
+    dbObj.logActivity(user.id, 'SIGNUP_OTP_VERIFIED', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
+      method: 'Email OTP Registration'
+    });
+
+    // Send welcome email asynchronously
+    sendWelcomeEmail(user.email, user.name).catch(() => {});
+
+    console.log(`[SIGNUP COMPLETE] Account created for ${user.email} (role: ${user.role}) after OTP verification`);
 
     const sanitizedUser = {
       id: user.id,
@@ -351,14 +444,51 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
       isVerified: true
     };
 
-    res.status(201).json({
+    return res.status(201).json({
       message: '✅ Account created successfully. Welcome to Godhara.',
       user: sanitizedUser,
       accessToken,
       refreshToken
     });
   } catch (err: any) {
-    res.status(500).json({ message: 'Registration failed', error: err.message });
+    res.status(500).json({ message: 'Account creation failed after OTP verification', error: err.message });
+  }
+});
+
+// POST /auth/register/resend-otp — Resend OTP for pending signup
+apiRouter.post('/auth/register/resend-otp', authRateLimiter, async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: 'Email is required.' });
+
+  if (!hasPendingSignup(email)) {
+    return res.status(400).json({ message: 'No pending signup found for this email. Please start registration again.' });
+  }
+
+  const cooldownSec = getResendCooldownRemaining(email);
+  if (cooldownSec > 0) {
+    return res.status(429).json({
+      message: `Please wait ${cooldownSec} seconds before resending OTP.`,
+      cooldownSeconds: cooldownSec
+    });
+  }
+
+  // Retrieve pending data to get the name
+  const pending = consumePendingSignup(email);
+  if (!pending) {
+    return res.status(400).json({ message: 'Signup session expired. Please start registration again.' });
+  }
+
+  // Re-store pending signup (we just consumed it to read name)
+  storePendingSignup(email, pending);
+
+  const otp = generateSecureOTP();
+  storeOTP(email, otp);
+
+  try {
+    await sendOTPEmail(email, pending.name, otp);
+    return res.json({ success: true, message: 'A new OTP has been sent to your email.' });
+  } catch (err: any) {
+    return res.status(500).json({ message: 'Failed to resend OTP email.', error: err.message });
   }
 });
 
@@ -2539,24 +2669,26 @@ apiRouter.post('/admin/users/:userId/unban', authenticateToken, requireAdmin, (r
   res.json({ message: 'User unbanned representation restored.' });
 });
 
-apiRouter.post('/admin/users/:userId/force-reset', authenticateToken, requireAdmin, (req: AuthRequest, res) => {
+apiRouter.post('/admin/users/:userId/force-reset', authenticateToken, requireAdmin, async (req: AuthRequest, res) => {
   const user = dbObj.findUserById(req.params.userId);
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  dbObj.updateUser(req.params.userId, { 
-    isVerified: false, 
-    failedLoginAttempts: 0 
+  // Reset failed login attempts
+  dbObj.updateUser(req.params.userId, {
+    failedLoginAttempts: 0,
+    lockUntil: null
   });
 
-  const resetToken = 'force-res-' + Math.random().toString(36).substring(2) + Date.now().toString(36);
-  dbObj.createEmailVerification(user.id, resetToken, new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
-  sendEmailVerification(user.email, user.name, resetToken);
+  // Send a standard password reset link (not email verification link)
+  const resetToken = 'reset-p-' + crypto.randomBytes(32).toString('hex');
+  dbObj.createPasswordReset(user.id, resetToken, new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
+  await sendPasswordResetEmail(user.email, user.name, resetToken).catch(() => {});
 
   dbObj.logActivity(req.user!.id, 'FORCED_PASSWORD_RESET', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
     targetEmail: user.email
   });
 
-  res.json({ message: 'Account force reset enacted. Re-verification dispatch has been initialized.' });
+  res.json({ message: 'Account force reset enacted. A password reset link has been dispatched to the user.' });
 });
 
 apiRouter.delete('/admin/users/:userId', authenticateToken, requireAdmin, (req: AuthRequest, res) => {
