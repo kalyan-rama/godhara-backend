@@ -401,7 +401,7 @@ export async function flushToPostgres(data: any) {
               p.id, p.name, p.slug, p.description || '', p.price, p.discountPrice, p.stock || 0,
               p.category, JSON.stringify(p.images || []), JSON.stringify(p.imagePublicIds || []),
               !!p.isFeatured, !!p.isActive, p.weight, p.createdAt, p.updatedAt
-            ]), !!p.isFeatured, !!p.isActive,
+          ]), Boolean(p.isFeatured), Boolean(p.isActive),
               p.weight, p.createdAt, p.updatedAt
             ]
           );
