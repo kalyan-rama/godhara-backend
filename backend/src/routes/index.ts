@@ -312,7 +312,7 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
       passwordHash,
       phone,
       role: initialRole,
-      isVerified: false, // block login until verification completes
+      isVerified: true, // Instant access — no email verification gate
       isBanned: false,
       failedLoginAttempts: 0,
       lockUntil: null,
@@ -320,21 +320,42 @@ apiRouter.post('/auth/register', authRateLimiter, async (req, res) => {
       address: address || { street: '', city: '', state: '', pincode: '' }
     });
 
-    // Create 24h verification link
-    const verificationToken = 'v-token-' + Math.random().toString(36).substring(2) + Date.now().toString(36);
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    dbObj.createEmailVerification(user.id, verificationToken, expiresAt);
-
-    // Trigger Email Delivery
-    await sendEmailVerification(email, name, verificationToken);
+    // Generate tokens immediately so the user is logged in right away
+    const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+    const accessToken = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, otpVerified: initialRole === 'CUSTOMER' },
+      JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+    const refreshToken = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     // Logging Activity Log
     dbObj.logActivity(user.id, 'SIGNUP', req.ip || 'unknown', req.headers['user-agent'] || 'unknown', {
-      method: 'Email System Verification Route'
+      method: 'Email Instant Registration'
     });
 
-    res.status(201).json({ 
-      message: 'Sacred Account created successfully! A confirmation link has been sent to your email. Click it to verify your account.' 
+    // Send welcome email asynchronously (non-blocking)
+    sendWelcomeEmail(email, name).catch(() => {});
+
+    const sanitizedUser = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      phone: user.phone,
+      address: user.address,
+      isVerified: true
+    };
+
+    res.status(201).json({
+      message: '✅ Account created successfully. Welcome to Godhara.',
+      user: sanitizedUser,
+      accessToken,
+      refreshToken
     });
   } catch (err: any) {
     res.status(500).json({ message: 'Registration failed', error: err.message });
@@ -407,15 +428,7 @@ apiRouter.post('/auth/login', authRateLimiter, async (req, res) => {
       });
     }
 
-    // 3. Block login if email is unverified
-    if (user.isVerified === false) {
-      return res.status(403).json({ 
-        message: 'Account verification required. Please click the confirmation link sent to your email to log in.',
-        unverified: true 
-      });
-    }
-
-    // Reset failed counters
+    // Reset failed counters (isVerified check removed — instant access for all email registrations)
     dbObj.updateUser(user.id, { failedLoginAttempts: 0, lockUntil: null });
 
     const sanitizedUser = { 
@@ -2314,6 +2327,35 @@ apiRouter.delete('/admin/coupons/:id', authenticateToken, requireAdmin, (req, re
 // Settings API
 apiRouter.get('/settings', (req, res) => {
   res.json(dbObj.getSettings());
+});
+
+// ─── Delivery charge calculator ───────────────────────────────────────────────
+// POST /api/delivery/calculate  { pincode, state }
+// Returns { deliveryCharge, isFree, reason }
+apiRouter.post('/delivery/calculate', (req, res) => {
+  const { pincode, state } = req.body;
+  const settings = dbObj.getSettings() as any;
+
+  const storeServicePincodes: string[] = settings.storeServicePincodes || [];
+  const freeDeliveryPincodes: string[] = settings.freeDeliveryPincodes || [];
+
+  // 1. Check if pincode is in a store service area → free delivery
+  if (pincode && storeServicePincodes.map((p: string) => p.trim()).includes(String(pincode).trim())) {
+    return res.json({ deliveryCharge: 0, isFree: true, reason: 'store_service_area' });
+  }
+
+  // 2. Check explicit free delivery pincodes
+  if (pincode && freeDeliveryPincodes.map((p: string) => p.trim()).includes(String(pincode).trim())) {
+    return res.json({ deliveryCharge: 0, isFree: true, reason: 'free_delivery_pincode' });
+  }
+
+  // 3. State-based charge
+  const normalizedState = (state || '').toLowerCase().trim();
+  let charge = settings.deliveryChargeOther ?? 100;
+  if (normalizedState === 'telangana') charge = settings.deliveryChargeTelangana ?? 70;
+  else if (normalizedState === 'andhra pradesh') charge = settings.deliveryChargeAP ?? 80;
+
+  return res.json({ deliveryCharge: charge, isFree: false, reason: 'state_based' });
 });
 
 apiRouter.put('/admin/settings', authenticateToken, requireAdmin, (req, res) => {
