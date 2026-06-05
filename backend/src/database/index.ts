@@ -57,7 +57,6 @@ export async function ensureSchema() {
         stock INT DEFAULT 0,
         category TEXT NOT NULL,
         images JSONB DEFAULT '[]'::jsonb,
-        "imagePublicIds" JSONB DEFAULT '[]'::jsonb,
         "isFeatured" BOOLEAN DEFAULT FALSE,
         "isActive" BOOLEAN DEFAULT TRUE,
         weight REAL,
@@ -115,22 +114,8 @@ export async function ensureSchema() {
         "freeShippingThreshold" NUMERIC,
         "flatShippingCharge" NUMERIC,
         "announcementText" TEXT,
-        "lowStockThreshold" INT,
-        "deliveryChargeTelangana" NUMERIC DEFAULT 70,
-        "deliveryChargeAP" NUMERIC DEFAULT 80,
-        "deliveryChargeOther" NUMERIC DEFAULT 100,
-        "freeDeliveryPincodes" TEXT DEFAULT '[]',
-        "storeLocations" TEXT DEFAULT '[]',
-        "storeServicePincodes" TEXT DEFAULT '[]'
+        "lowStockThreshold" INT
       );
-
-      -- Performance indexes
-      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-      CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-      CREATE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
-      CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
-      CREATE INDEX IF NOT EXISTS idx_orders_userid ON orders("userId");
-      CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
       CREATE TABLE IF NOT EXISTS activity_logs (
         id VARCHAR(512) PRIMARY KEY,
@@ -162,22 +147,27 @@ export async function ensureSchema() {
         name TEXT PRIMARY KEY
       );
 
-      -- OTP authentication logs table
-      CREATE TABLE IF NOT EXISTS otp_logs (
-        id SERIAL PRIMARY KEY,
-        email TEXT NOT NULL,
-        action TEXT NOT NULL,
-        ip TEXT,
-        success BOOLEAN DEFAULT FALSE,
-        timestamp TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_otp_logs_email ON otp_logs(email);
-    `);
-    // Add imagePublicIds column if missing (migration for existing DBs)
-    await client.query(`
-      ALTER TABLE products ADD COLUMN IF NOT EXISTS "imagePublicIds" JSONB DEFAULT '[]'::jsonb;
-    `).catch(() => {});
+      -- Ensure settings table columns are fully up to date to prevent all setting-table errors
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "storeName" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "logoUrl" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "founderImageUrl" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "founderName" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "founderQuote" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "contactEmail" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS address TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS phone TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "freeShippingThreshold" NUMERIC;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "flatShippingCharge" NUMERIC;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "announcementText" TEXT;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "lowStockThreshold" INT;
 
+      -- Create performance optimization indexes
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
+      CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+      CREATE INDEX IF NOT EXISTS idx_orders_userid ON orders("userId");
+      CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+    `);
     console.log("[PostgreSQL] Schema verification successful");
   } catch (err) {
     console.error("[PostgreSQL] Error ensuring table schemas:", err);
@@ -238,18 +228,7 @@ export async function loadFromPostgres() {
 
     const resSettings = await client.query('SELECT * FROM settings WHERE id = $1', ['global']);
     if (resSettings.rows.length > 0) {
-      const s = parseNumericFields(resSettings.rows[0]);
-      // Parse JSON string fields back to arrays
-      if (typeof s.freeDeliveryPincodes === 'string') {
-        try { s.freeDeliveryPincodes = JSON.parse(s.freeDeliveryPincodes); } catch { s.freeDeliveryPincodes = []; }
-      }
-      if (typeof s.storeLocations === 'string') {
-        try { s.storeLocations = JSON.parse(s.storeLocations); } catch { s.storeLocations = []; }
-      }
-      if (typeof s.storeServicePincodes === 'string') {
-        try { s.storeServicePincodes = JSON.parse(s.storeServicePincodes); } catch { s.storeServicePincodes = []; }
-      }
-      data.settings = s;
+      data.settings = parseNumericFields(resSettings.rows[0]);
     } else {
       data.settings = {
         storeName: 'Godhara',
@@ -263,13 +242,7 @@ export async function loadFromPostgres() {
         freeShippingThreshold: 1000,
         flatShippingCharge: 50,
         announcementText: 'Shop ₹1000 to Get Free Shipping',
-        lowStockThreshold: 10,
-        deliveryChargeTelangana: 70,
-        deliveryChargeAP: 80,
-        deliveryChargeOther: 100,
-        freeDeliveryPincodes: [],
-        storeLocations: [],
-        storeServicePincodes: []
+        lowStockThreshold: 10
       };
     }
 
@@ -334,10 +307,8 @@ export async function flushToPostgres(data: any) {
           `INSERT INTO settings (
             id, "storeName", "logoUrl", "founderImageUrl", "founderName", "founderQuote", 
             "contactEmail", address, phone, "freeShippingThreshold", "flatShippingCharge", 
-            "announcementText", "lowStockThreshold",
-            "deliveryChargeTelangana", "deliveryChargeAP", "deliveryChargeOther",
-            "freeDeliveryPincodes", "storeLocations", "storeServicePincodes"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            "announcementText", "lowStockThreshold"
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
           ON CONFLICT (id) DO UPDATE SET
             "storeName" = EXCLUDED."storeName",
             "logoUrl" = EXCLUDED."logoUrl",
@@ -350,13 +321,7 @@ export async function flushToPostgres(data: any) {
             "freeShippingThreshold" = EXCLUDED."freeShippingThreshold",
             "flatShippingCharge" = EXCLUDED."flatShippingCharge",
             "announcementText" = EXCLUDED."announcementText",
-            "lowStockThreshold" = EXCLUDED."lowStockThreshold",
-            "deliveryChargeTelangana" = EXCLUDED."deliveryChargeTelangana",
-            "deliveryChargeAP" = EXCLUDED."deliveryChargeAP",
-            "deliveryChargeOther" = EXCLUDED."deliveryChargeOther",
-            "freeDeliveryPincodes" = EXCLUDED."freeDeliveryPincodes",
-            "storeLocations" = EXCLUDED."storeLocations",
-            "storeServicePincodes" = EXCLUDED."storeServicePincodes"`,
+            "lowStockThreshold" = EXCLUDED."lowStockThreshold"`,
           [
             'global',
             data.settings.storeName,
@@ -370,13 +335,7 @@ export async function flushToPostgres(data: any) {
             data.settings.freeShippingThreshold,
             data.settings.flatShippingCharge,
             data.settings.announcementText,
-            data.settings.lowStockThreshold,
-            data.settings.deliveryChargeTelangana ?? 70,
-            data.settings.deliveryChargeAP ?? 80,
-            data.settings.deliveryChargeOther ?? 100,
-            JSON.stringify(data.settings.freeDeliveryPincodes ?? []),
-            JSON.stringify(data.settings.storeLocations ?? []),
-            JSON.stringify(data.settings.storeServicePincodes ?? [])
+            data.settings.lowStockThreshold
           ]
         );
         console.log('[Database Sync] Synchronized settings.');
@@ -436,8 +395,8 @@ export async function flushToPostgres(data: any) {
           const res = await client.query(
             `INSERT INTO products (
               id, name, slug, description, price, "discountPrice", stock, category, images,
-              "imagePublicIds", "isFeatured", "isActive", weight, "createdAt", "updatedAt"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+              "isFeatured", "isActive", weight, "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (id) DO UPDATE SET
               name = EXCLUDED.name,
               slug = EXCLUDED.slug,
@@ -447,29 +406,16 @@ export async function flushToPostgres(data: any) {
               stock = EXCLUDED.stock,
               category = EXCLUDED.category,
               images = EXCLUDED.images,
-              "imagePublicIds" = EXCLUDED."imagePublicIds",
               "isFeatured" = EXCLUDED."isFeatured",
               "isActive" = EXCLUDED."isActive",
               weight = EXCLUDED.weight,
               "updatedAt" = EXCLUDED."updatedAt"
             RETURNING (xmax = 0) AS is_insert`,
-           [
-  p.id,
-  p.name,
-  p.slug,
-  p.description || '',
-  p.price,
-  p.discountPrice,
-  p.stock || 0,
-  p.category,
-  JSON.stringify(p.images || []),
-  JSON.stringify(p.imagePublicIds || []),
-  Boolean(p.isFeatured),
-  Boolean(p.isActive),
-  p.weight,
-  p.createdAt,
-  p.updatedAt
-]
+            [
+              p.id, p.name, p.slug, p.description || '', p.price, p.discountPrice, p.stock || 0,
+              p.category, JSON.stringify(p.images || []), !!p.isFeatured, !!p.isActive,
+              p.weight, p.createdAt, p.updatedAt
+            ]
           );
           if (res.rows && res.rows[0] && res.rows[0].is_insert) {
             insertCount++;
@@ -1168,8 +1114,7 @@ export const dbObj = {
       slug,
       isActive: true,
       isFeatured: false,
-      images: prod.images || [],
-      imagePublicIds: prod.imagePublicIds || [],
+      images: prod.images || ['https://images.unsplash.com/photo-1615485290382-441e4d049cb5?auto=format&fit=crop&q=80&w=600'],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       ...prod
