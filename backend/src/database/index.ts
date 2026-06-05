@@ -57,6 +57,7 @@ export async function ensureSchema() {
         stock INT DEFAULT 0,
         category TEXT NOT NULL,
         images JSONB DEFAULT '[]'::jsonb,
+        "imagePublicIds" JSONB DEFAULT '[]'::jsonb,
         "isFeatured" BOOLEAN DEFAULT FALSE,
         "isActive" BOOLEAN DEFAULT TRUE,
         weight REAL,
@@ -147,6 +148,11 @@ export async function ensureSchema() {
         name TEXT PRIMARY KEY
       );
     `);
+    // Add imagePublicIds column if missing (migration for existing DBs)
+    await client.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS "imagePublicIds" JSONB DEFAULT '[]'::jsonb;
+    `).catch(() => {});
+
     console.log("[PostgreSQL] Schema verification successful");
   } catch (err) {
     console.error("[PostgreSQL] Error ensuring table schemas:", err);
@@ -374,8 +380,8 @@ export async function flushToPostgres(data: any) {
           const res = await client.query(
             `INSERT INTO products (
               id, name, slug, description, price, "discountPrice", stock, category, images,
-              "isFeatured", "isActive", weight, "createdAt", "updatedAt"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+              "imagePublicIds", "isFeatured", "isActive", weight, "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (id) DO UPDATE SET
               name = EXCLUDED.name,
               slug = EXCLUDED.slug,
@@ -385,6 +391,7 @@ export async function flushToPostgres(data: any) {
               stock = EXCLUDED.stock,
               category = EXCLUDED.category,
               images = EXCLUDED.images,
+              "imagePublicIds" = EXCLUDED."imagePublicIds",
               "isFeatured" = EXCLUDED."isFeatured",
               "isActive" = EXCLUDED."isActive",
               weight = EXCLUDED.weight,
@@ -392,7 +399,9 @@ export async function flushToPostgres(data: any) {
             RETURNING (xmax = 0) AS is_insert`,
             [
               p.id, p.name, p.slug, p.description || '', p.price, p.discountPrice, p.stock || 0,
-              p.category, JSON.stringify(p.images || []), !!p.isFeatured, !!p.isActive,
+              p.category, JSON.stringify(p.images || []), JSON.stringify(p.imagePublicIds || []),
+              !!p.isFeatured, !!p.isActive, p.weight, p.createdAt, p.updatedAt
+            ]), !!p.isFeatured, !!p.isActive,
               p.weight, p.createdAt, p.updatedAt
             ]
           );
@@ -1093,7 +1102,8 @@ export const dbObj = {
       slug,
       isActive: true,
       isFeatured: false,
-      images: prod.images || ['https://images.unsplash.com/photo-1615485290382-441e4d049cb5?auto=format&fit=crop&q=80&w=600'],
+      images: prod.images || [],
+      imagePublicIds: prod.imagePublicIds || [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       ...prod
