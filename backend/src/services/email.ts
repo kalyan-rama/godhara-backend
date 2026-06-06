@@ -1,6 +1,26 @@
 import fs from 'fs';
 import path from 'path';
 
+// ============================================================
+// EMAIL CONFIGURATION STARTUP VALIDATION
+// ============================================================
+const FROM_EMAIL = process.env.FROM_EMAIL || 'noreply@nexakite.shop';
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+
+// Startup validation logging
+if (!process.env.FROM_EMAIL) {
+  console.warn('⚠️  [EMAIL CONFIG] WARNING: FROM_EMAIL environment variable is not set. Falling back to: noreply@nexakite.shop');
+  console.warn('⚠️  [EMAIL CONFIG] Set FROM_EMAIL=noreply@nexakite.shop in your Railway/Render environment variables.');
+} else {
+  console.log(`✅ [EMAIL CONFIG] Sender address configured: ${FROM_EMAIL}`);
+}
+
+if (!RESEND_API_KEY) {
+  console.warn('⚠️  [EMAIL CONFIG] WARNING: RESEND_API_KEY is not set. Emails will be simulated only.');
+} else {
+  console.log(`✅ [EMAIL CONFIG] Resend API key detected (length: ${RESEND_API_KEY.length}).`);
+}
+
 // Background Queue Simulator (for standard transactional tasks with automated retry & exponential backoff)
 export const emailDispatchQueue: Array<{
   id: string;
@@ -12,9 +32,9 @@ export const emailDispatchQueue: Array<{
   error?: string;
 }> = [];
 
-// Helper to determine from address dynamically
+// Helper to determine from address dynamically — always uses verified domain
 function getFromAddress(): string {
-  return process.env.FROM_EMAIL || 'Godhara <onboarding@resend.dev>';
+  return process.env.FROM_EMAIL || 'noreply@nexakite.shop';
 }
 
 // Resend HTTP API Client implementation using native global fetch
@@ -47,9 +67,8 @@ async function sendViaResend(payload: {
     attachments: payload.attachments || []
   };
 
-  console.log(`📨 [RESEND API] Delivering email down channel to: ${formattedRecipients.join(', ')}...`);
+  console.log(`📨 [RESEND API] Sending from: ${payload.from} → to: ${formattedRecipients.join(', ')}...`);
 
-  // Using Node 18+ global fetch
   const response = await fetch(resendUrl, {
     method: 'POST',
     headers: {
@@ -87,7 +106,7 @@ async function triggerBackgroundEmailWorker() {
 
   try {
     const res = await sendViaResend(pending.mailOptions);
-    console.log(`📨 [RESEND QUEUE] Successfully sent "${pending.type}" inside worker to ${pending.to}. ID:`, res?.id);
+    console.log(`📨 [RESEND QUEUE] Successfully sent "${pending.type}" to ${pending.to}. ID:`, res?.id);
     pending.status = 'SENT';
   } catch (err: any) {
     console.error(`❌ [RESEND QUEUE] Dispatch failed on attempt ${pending.attempts}: ${err.message}`);
@@ -95,7 +114,6 @@ async function triggerBackgroundEmailWorker() {
       pending.status = 'FAILED';
       pending.error = err.message;
     } else {
-      // Retry with backoff
       const retryMs = pending.attempts === 1 ? 5000 : 30000;
       setTimeout(() => {
         pending.status = 'PENDING';
@@ -104,7 +122,6 @@ async function triggerBackgroundEmailWorker() {
     }
   }
 
-  // Next job in pipeline
   setTimeout(triggerBackgroundEmailWorker, 100);
 }
 
@@ -122,10 +139,10 @@ function queueEmail(to: string, type: string, mailOptions: any) {
   return jobId;
 }
 
-// Global brand elements referencing process.env dynamically to avoid any hardcoded fallback domains
+// Global brand elements
 const brandHeaderHtml = `
   <div style="text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 20px; margin-bottom: 25px;">
-    <img src="https://godhara-fronted.vercel.app/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
+    <img src="${process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000'}/logo.png" alt="Godhara Logo" style="width: 75px; height: 75px; display: inline-block; vertical-align: middle; margin-bottom: 12px; object-fit: contain;" />
     <h1 style="color: #6B2D0E; font-size: 26px; margin: 0 0 5px 0; font-family: 'Georgia', serif; font-weight: bold;">గోధార - Godhara</h1>
     <p style="margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #E8820C; font-weight: bold;">Traditional Ayurvedic Purities & Gau Seva</p>
   </div>
@@ -137,8 +154,7 @@ const brandFooterHtml = `
     <p style="margin: 4px 0 0 0;">Pocharam Apartment, Banswada, Telangana 503187</p>
     <p style="margin: 12px 0 0 0; font-size: 9px; opacity: 0.6; line-height: 1.4;">
       This is an automated transactional message regarding your account settings. <br />
-      If you did not request this, please secure your login instantly. <br />
-      <a href="https://godhara.com/unsubscribe" style="color: #6B2D0E; text-decoration: underline;">Unsubscribe Preferences</a> | Banswada Seva Desk
+      If you did not request this, please secure your login instantly.
     </p>
   </div>
 `;
@@ -152,13 +168,11 @@ export async function sendEmailVerification(email: string, name: string, token: 
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
       ${brandHeaderHtml}
       <p style="font-size: 16px; line-height: 1.6; margin-top: 0;">Hare Krishna / Greetings <strong>${name}</strong>,</p>
-      <p style="font-size: 14px; line-height: 1.6;">Thank you for registering at Godhara. To experience traditional Ayurveda and ancient Ghee recipes, please verify your email address to active your account within 24 hours.</p>
-      
+      <p style="font-size: 14px; line-height: 1.6;">Thank you for registering at Godhara. Please verify your email address to activate your account.</p>
       <div style="text-align: center; margin: 30px 0;">
-        <a href="${verifyLink}" style="background-color: #6B2D0E; color: #FFFFFF; font-weight: bold; padding: 13px 28px; text-decoration: none; border-radius: 50px; display: inline-block; font-size: 14px; letter-spacing: 0.5px; box-shadow: 0 2px 5px rgba(0,0,0,0.15);">Verify My Account Address</a>
+        <a href="${verifyLink}" style="background-color: #6B2D0E; color: #FFFFFF; font-weight: bold; padding: 13px 28px; text-decoration: none; border-radius: 50px; display: inline-block; font-size: 14px;">Verify My Account</a>
       </div>
-
-      <p style="font-size: 12px; color: #666; word-break: break-all; text-align: center;">Or copy this link to browser: <br/><a href="${verifyLink}" style="color: #E8820C; text-decoration: none;">${verifyLink}</a></p>
+      <p style="font-size: 12px; color: #666; word-break: break-all; text-align: center;">Or copy this link: <br/><a href="${verifyLink}" style="color: #E8820C; text-decoration: none;">${verifyLink}</a></p>
       ${brandFooterHtml}
     </div>
   `;
@@ -171,16 +185,13 @@ export async function sendEmailVerification(email: string, name: string, token: 
   });
 }
 
-// 2. WELCOME PERSONALIZED EMAIL AFTER VERIFICATION
+// 2. WELCOME EMAIL AFTER VERIFICATION
 export async function sendWelcomeEmail(email: string, name: string) {
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px;">
       ${brandHeaderHtml}
       <p style="font-size: 16px; line-height: 1.6; margin-top: 0;">Welcome home <strong>${name}</strong>,</p>
-      <p style="font-size: 14px; line-height: 1.6;">Your contact email is officially verified! Your Seva Account is active and you can now order real Cow dung cups, pure hand-churned Vedic Bilona Ghee, and organic Panchagavya remedies.</p>
-      
-      <p style="font-size: 14px; line-height: 1.6;">To welcome you into our circle, use code <strong>WELCOME10</strong> to grab flat 10% off on your initial traditional cart.</p>
-
+      <p style="font-size: 14px; line-height: 1.6;">Your account is active! Use code <strong>WELCOME10</strong> for 10% off your first order.</p>
       <div style="text-align: center; margin: 30px 0;">
         <a href="https://godhara.com" style="background-color: #E8820C; color: #FFFFFF; font-weight: bold; padding: 13px 28px; text-decoration: none; border-radius: 50px; display: inline-block; font-size: 14px;">Explore Vedic Catalogues</a>
       </div>
@@ -191,12 +202,12 @@ export async function sendWelcomeEmail(email: string, name: string) {
   queueEmail(email, 'Welcome Email', {
     from: getFromAddress(),
     to: email,
-    subject: 'Welcome to Godhara Circle! Your traditional account is active',
+    subject: 'Welcome to Godhara Circle! Your account is active',
     html,
   });
 }
 
-// 3. SECURE PASSWORD RESET REQUEST EMAIL
+// 3. PASSWORD RESET EMAIL
 export async function sendPasswordResetEmail(email: string, name: string, token: string) {
   const currentAppUrl = process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000';
   const resetLink = `${currentAppUrl}/reset-password?token=${token}`;
@@ -205,14 +216,11 @@ export async function sendPasswordResetEmail(email: string, name: string, token:
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px;">
       ${brandHeaderHtml}
       <h3 style="color: #6B2D0E; font-size: 18px; margin-top: 0;">Password Reset Request</h3>
-      <p style="font-size: 14px; line-height: 1.6;">We received a password reset request for your Godhara login. Click the button below to update your password. This link is secure and <strong>expires in 15 minutes</strong> for security reasons.</p>
-      
+      <p style="font-size: 14px; line-height: 1.6;">We received a password reset request for your Godhara login. This link expires in <strong>15 minutes</strong>.</p>
       <div style="text-align: center; margin: 30px 0;">
         <a href="${resetLink}" style="background-color: #6B2D0E; color: #FFFFFF; font-weight: bold; padding: 13px 28px; text-decoration: none; border-radius: 50px; display: inline-block; font-size: 14px;">Reset My Password</a>
       </div>
-
-      <p style="font-size: 12px; color: #E8820C; text-align: center; font-weight: bold; text-transform: uppercase;">⚠️ Avoid sharing this reset link with anyone.</p>
-      <p style="font-size: 11px; color: #888; text-align: center; margin-top: 15px;">If you did not request this, please ignore this email. Your credentials remain safe and unmodified.</p>
+      <p style="font-size: 12px; color: #E8820C; text-align: center; font-weight: bold; text-transform: uppercase;">⚠️ Never share this link with anyone.</p>
       ${brandFooterHtml}
     </div>
   `;
@@ -220,21 +228,20 @@ export async function sendPasswordResetEmail(email: string, name: string, token:
   queueEmail(email, 'Password Reset', {
     from: getFromAddress(),
     to: email,
-    subject: 'Secure Passcode Reset Link - Godhara Traditional',
+    subject: 'Secure Password Reset Link - Godhara Traditional',
     html,
   });
 }
 
-// 4. PASSWORD CHANGED SECURITY WARNING email
+// 4. PASSWORD CHANGED SECURITY WARNING
 export async function sendPasswordChangedEmail(email: string, name: string) {
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px;">
       ${brandHeaderHtml}
       <h3 style="color: #D32F2F; font-size: 18px; margin-top: 0;">Security Alert: Password Changed</h3>
-      <p style="font-size: 14px; line-height: 1.6;">Greetings <strong>${name}</strong>, this is an automated alert informing you that the password for your Godhara account has been updated successfully.</p>
-      
+      <p style="font-size: 14px; line-height: 1.6;">Greetings <strong>${name}</strong>, the password for your Godhara account has been updated successfully.</p>
       <div style="background-color: #FFEBEE; border-left: 4px solid #D32F2F; padding: 15px; margin: 20px 0; font-size: 13px; color: #5D4037; border-radius: 4px;">
-        <strong>Was this not you?</strong> If you did not perform this change, your credentials may be compromised. Please lock down your account or contact support immediately on WhatsApp.
+        <strong>Was this not you?</strong> Please reset your password and contact support immediately.
       </div>
       ${brandFooterHtml}
     </div>
@@ -248,21 +255,18 @@ export async function sendPasswordChangedEmail(email: string, name: string) {
   });
 }
 
-// 5. LOGIN FROM NEW DEVICE ALERT email
+// 5. LOGIN DEVICE ALERT
 export async function sendLoginDeviceAlert(email: string, name: string, detail: { ip: string; browser: string; timestamp: string }) {
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px;">
       ${brandHeaderHtml}
-      <h3 style="color: #6B2D0E; font-size: 18px; margin-top: 0;">New Account Sign In Detected</h3>
-      <p style="font-size: 14px; line-height: 1.6;">Greetings <strong>${name}</strong>, a new login session was established on your account:</p>
-      
+      <h3 style="color: #6B2D0E; font-size: 18px; margin-top: 0;">New Sign In Detected</h3>
+      <p style="font-size: 14px; line-height: 1.6;">Greetings <strong>${name}</strong>, a new login session was established:</p>
       <div style="background-color: #F5EFE6; border: 1px solid #D4B896; padding: 18px; border-radius: 8px; font-family: monospace; font-size: 12px; color: #2C1810; margin: 20px 0; line-height: 1.5;">
         • Client IP: ${detail.ip} <br />
         • Client Device: ${detail.browser} <br />
-        • Time Coordinate: ${detail.timestamp}
+        • Time: ${detail.timestamp}
       </div>
-
-      <p style="font-size: 12px; color: #888;">If you recognize this browser login session, no action is required. If this login was unauthorized, we recommend resetting your password immediately.</p>
       ${brandFooterHtml}
     </div>
   `;
@@ -275,17 +279,15 @@ export async function sendLoginDeviceAlert(email: string, name: string, detail: 
   });
 }
 
-// 6. ACCOUNT LOCKED OUT ALERT
+// 6. ACCOUNT LOCKED ALERT
 export async function sendAccountLockedEmail(email: string, name: string) {
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #D32F2F; border-radius: 12px;">
       ${brandHeaderHtml}
       <h3 style="color: #D32F2F; font-size: 18px; margin-top: 0;">Security Alert: Account Temporarily Locked</h3>
-      <p style="font-size: 14px; line-height: 1.6;">Greetings <strong>${name}</strong>, your account has been temporarily locked after <strong>5 consecutive failed password attempts</strong>.</p>
-      
+      <p style="font-size: 14px; line-height: 1.6;">Greetings <strong>${name}</strong>, your account has been locked after <strong>5 consecutive failed attempts</strong>.</p>
       <div style="background-color: #FFEBEE; border-left: 4px solid #D32F2F; padding: 15px; margin: 20px 0; font-size: 13px; color: #5D4037; border-radius: 4px; line-height: 1.5;">
-        <strong>Lockout Duration:</strong> 15 Minutes <br />
-        For security, all logins for this address have been disabled. Access will restore automatically, or you can invoke a passcode reset request if needed.
+        <strong>Lockout Duration:</strong> 15 Minutes
       </div>
       ${brandFooterHtml}
     </div>
@@ -294,25 +296,22 @@ export async function sendAccountLockedEmail(email: string, name: string) {
   queueEmail(email, 'Account Locked Alert', {
     from: getFromAddress(),
     to: email,
-    subject: 'Security Notice: Account Temporarily Lockout Activated',
+    subject: 'Security Notice: Account Temporarily Locked',
     html,
   });
 }
 
-// 7. OTP DISPATCH EMAIL (Keep signature, route compatibility, and throw behavior intact)
+// 7. OTP EMAIL (primary — direct send, not queued)
 export async function sendOTPEmail(email: string, name: string, otp: string) {
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
       ${brandHeaderHtml}
       <p style="font-size: 16px; line-height: 1.6; margin-top: 0;">Hare Krishna / Greetings <strong>${name}</strong>,</p>
-      <p style="font-size: 14px; line-height: 1.6;">Your secure single-use One-Time Passcode (OTP) is shown below. This code is valid for exactly <strong>5 minutes</strong> and will expire afterwards.</p>
-      
+      <p style="font-size: 14px; line-height: 1.6;">Your secure One-Time Passcode (OTP) is shown below. Valid for <strong>5 minutes</strong>.</p>
       <div style="text-align: center; margin: 30px 0; background-color: #FAF2E8; padding: 20px; border-radius: 8px; border: 1px dashed #D4B896;">
         <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #6B2D0E; font-family: monospace;">${otp}</span>
       </div>
-
-      <p style="font-size: 12px; color: #E8820C; text-align: center; font-weight: bold;">⚠️ For security, never share this passcode with anyone.</p>
-      <p style="font-size: 11px; color: #888; text-align: center; margin-top: 15px;">If you did not request this OTP, please secure your login credentials immediately.</p>
+      <p style="font-size: 12px; color: #E8820C; text-align: center; font-weight: bold;">⚠️ Never share this code with anyone.</p>
       ${brandFooterHtml}
     </div>
   `;
@@ -320,7 +319,7 @@ export async function sendOTPEmail(email: string, name: string, otp: string) {
   const mailOptions = {
     from: getFromAddress(),
     to: email.trim().toLowerCase(),
-    subject: `Your Secure Login Passcode: ${otp} - Godhara`,
+    subject: `Your Secure Login Code: ${otp} - Godhara`,
     html,
   };
 
@@ -328,29 +327,22 @@ export async function sendOTPEmail(email: string, name: string, otp: string) {
     await sendViaResend(mailOptions);
   } catch (err: any) {
     console.error(`❌ [RESEND FAILURE] Failed to deliver OTP email to ${email}. Error: ${err.message}`);
-    throw new Error(`Resend Mailer failed to dispatch verification token: ${err.message}`);
+    throw new Error(`Email delivery failed: ${err.message}`);
   }
 }
 
-// 8. NEW SPECIALIZED EXPORTED OTP FUNCTION
+// 8. SPECIALIZED OTP EMAIL (for LOGIN / ADMIN_LOGIN purposes)
 export async function sendOtpEmail(email: string, name: string, otp: string, purpose: 'LOGIN' | 'ADMIN_LOGIN') {
   const purposeText = purpose === 'ADMIN_LOGIN' ? 'Administrative Access' : 'Secure Login';
   const html = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 580px; margin: 0 auto; border: 3px solid #6B2D0E; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
       ${brandHeaderHtml}
       <p style="font-size: 16px; line-height: 1.6; margin-top: 0;">Hare Krishna / Greetings <strong>${name}</strong>,</p>
-      <p style="font-size: 14px; line-height: 1.6;">You requested a One-Time Passcode (OTP) for <strong>${purposeText}</strong>. Please use the secure code below to finalize your sign-in.</p>
-      
-      <div style="text-align: center; margin: 30px 0; background-color: #FAF2E8; padding: 25px; border-radius: 12px; border: 2px dashed #6B2D0E; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
-        <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #6B2D0E; font-family: monospace; text-shadow: 1px 1px 0px #FFF;">${otp}</span>
+      <p style="font-size: 14px; line-height: 1.6;">OTP for <strong>${purposeText}</strong>. Valid for <strong>5 minutes</strong>.</p>
+      <div style="text-align: center; margin: 30px 0; background-color: #FAF2E8; padding: 25px; border-radius: 12px; border: 2px dashed #6B2D0E;">
+        <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #6B2D0E; font-family: monospace;">${otp}</span>
       </div>
-
-      <p style="font-size: 12px; color: #D32F2F; text-align: center; font-weight: bold; margin-bottom: 4px;">⚠️ Expiry Warning: This passcode is valid for exactly 5 minutes.</p>
-      <p style="font-size: 11px; color: #777; text-align: center; margin-top: 4px;">Notice: Incorrect passcode entries are restricted. Maximum attempts warning is in effect to protect your account from brute-force threats.</p>
-      
-      <p style="font-size: 11px; color: #888; text-align: center; margin-top: 20px; line-height: 1.4;">
-        If you did not initiate this login request, please ignore this email or change your password immediately to secure your Godhara circle account.
-      </p>
+      <p style="font-size: 12px; color: #D32F2F; text-align: center; font-weight: bold; margin-bottom: 4px;">⚠️ Expires in 5 minutes. Never share this code.</p>
       ${brandFooterHtml}
     </div>
   `;
@@ -358,19 +350,19 @@ export async function sendOtpEmail(email: string, name: string, otp: string, pur
   const mailOptions = {
     from: getFromAddress(),
     to: email.trim().toLowerCase(),
-    subject: `[${purposeText} Verification Code] ${otp} - Godhara`,
+    subject: `[${purposeText} Code] ${otp} - Godhara`,
     html,
   };
 
   try {
     await sendViaResend(mailOptions);
   } catch (err: any) {
-    console.error(`❌ [RESEND OTP FAILURE] Failed to deliver specialized OTP email to ${email}. Error: ${err.message}`);
-    throw new Error(`Resend Mailer failed to dispatch specialized verification token: ${err.message}`);
+    console.error(`❌ [RESEND OTP FAILURE] Failed to deliver OTP to ${email}. Error: ${err.message}`);
+    throw new Error(`Email delivery failed: ${err.message}`);
   }
 }
 
-// 9. TAX INVOICE DIRECT CONFIRMATION (Uses Base64 attachments)
+// 9. ORDER CONFIRMATION EMAIL
 export async function sendOrderConfirmationEmail(order: any, invoicePdfPath: string) {
   const settings = {
     storeName: process.env.STORE_NAME || 'Godhara',
@@ -382,20 +374,16 @@ export async function sendOrderConfirmationEmail(order: any, invoicePdfPath: str
   const emailHtml = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #F5EFE6; padding: 40px; color: #2C1810; max-width: 600px; margin: 0 auto; border: 4px solid #6B2D0E; border-radius: 8px;">
       ${brandHeaderHtml}
-      
       <p style="font-size: 16px; line-height: 1.6;">Greetings, <strong>${order.shippingAddress.name}</strong>,</p>
-      <p style="font-size: 15px; line-height: 1.6;">Thank you for your purchase with Godhara. Your order has been placed successfully and has been compiled at our associated traditional Gaushalas.</p>
-      
+      <p style="font-size: 15px; line-height: 1.6;">Your order has been placed successfully.</p>
       <div style="background-color: #FFFFFF; padding: 20px; border-radius: 4px; border: 1px dashed #D4B896; margin: 20px 0;">
-        <h3 style="margin-top: 0; color: #6B2D0E; border-bottom: 1px solid #F5EFE6; padding-bottom: 8px;">Order Details</h3>
+        <h3 style="margin-top: 0; color: #6B2D0E;">Order Details</h3>
         <p style="margin: 6px 0; font-size: 14px;"><strong>Order Reference:</strong> ${order.id}</p>
         <p style="margin: 6px 0; font-size: 14px;"><strong>Order Total:</strong> ₹${order.total.toFixed(2)}</p>
         <p style="margin: 6px 0; font-size: 14px;"><strong>Payment Status:</strong> ${order.paymentStatus || 'PENDING'}</p>
-        <p style="margin: 6px 0; font-size: 14px;"><strong>Shipped Via:</strong> Gaushala Cargo Logistics</p>
       </div>
-
-      <p style="font-size: 14px; line-height: 1.6;">We have attached the official <strong>TAX INVOICE (PDF)</strong> directly to this email for your bookkeeping records.</p>
-      <p style="font-size: 14px; line-height: 1.6;">If you have any questions, feel free to ring us directly on WhatsApp at <strong>${settings.storePhone}</strong> or respond to this email.</p>
+      <p style="font-size: 14px; line-height: 1.6;">Tax Invoice (PDF) is attached for your records.</p>
+      <p style="font-size: 14px;">Questions? Contact us on WhatsApp: <strong>${settings.storePhone}</strong></p>
       ${brandFooterHtml}
     </div>
   `;
@@ -409,7 +397,7 @@ export async function sendOrderConfirmationEmail(order: any, invoicePdfPath: str
         content: base64Content,
       });
     } catch (err: any) {
-      console.error(`⚠️ [PDF ATTACH ERROR] Failed to read or encode PDF: ${err.message}`);
+      console.error(`⚠️ [PDF ATTACH ERROR] Failed to encode PDF: ${err.message}`);
     }
   }
 
@@ -424,52 +412,33 @@ export async function sendOrderConfirmationEmail(order: any, invoicePdfPath: str
   queueEmail(mailOptions.to, 'Order Confirmation', mailOptions);
 }
 
-// 10. ADMIN ORDER NOTIFICATION (Queued using Resend format)
+// 10. ADMIN ORDER NOTIFICATION
 export async function sendAdminNewOrderNotificationEmail(order: any, adminEmail: string) {
-  const settings = {
-    storeName: process.env.STORE_NAME || 'Godhara',
-    storePhone: process.env.STORE_PHONE || '+91 8978038932',
-    storeEmail: process.env.STORE_EMAIL || 'support@godhara.com',
-  };
-
   const itemsHtml = order.items
     .map(
       (item: any) =>
-        `<li><strong>${item.name}</strong> (Qty: ${item.qty}) - ₹${(
-          item.unitPrice * item.qty
-        ).toLocaleString()}</li>`
+        `<li><strong>${item.name}</strong> (Qty: ${item.qty}) - ₹${(item.unitPrice * item.qty).toLocaleString()}</li>`
     )
     .join('');
 
   const emailSubject = `🚨 New Order Received! Order Ref: ${order.id}`;
   const emailHtml = `
     <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #FAF8F5; padding: 40px; color: #2C1810; max-width: 600px; margin: 0 auto; border: 4px solid #E8820C; border-radius: 8px;">
-      <h2 style="color: #6B2D0E; margin-top: 0; text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 12px;">🚨 New Store Order Processed</h2>
-      <p style="font-size: 15px; line-height: 1.6;">Hare Krishna Admin, <br/> A new order has been paid and verified successfully via Razorpay.</p>
-      
+      <h2 style="color: #6B2D0E; margin-top: 0; text-align: center; border-bottom: 2px solid #D4B896; padding-bottom: 12px;">🚨 New Store Order</h2>
+      <p style="font-size: 15px; line-height: 1.6;">A new order has been received.</p>
       <div style="background-color: #FFFFFF; padding: 20px; border-radius: 4px; border: 1px dashed #D4B896; margin: 20px 0;">
-        <h3 style="margin-top: 0; color: #E8820C;">Customer & Delivery Details</h3>
-        <p style="margin: 6px 0; font-size: 13px;"><strong>Customer Name:</strong> ${order.shippingAddress.name}</p>
+        <h3 style="margin-top: 0; color: #E8820C;">Customer Details</h3>
+        <p style="margin: 6px 0; font-size: 13px;"><strong>Name:</strong> ${order.shippingAddress.name}</p>
         <p style="margin: 6px 0; font-size: 13px;"><strong>Email:</strong> ${order.shippingAddress.email}</p>
         <p style="margin: 6px 0; font-size: 13px;"><strong>Phone:</strong> ${order.shippingAddress.phone}</p>
-        <p style="margin: 6px 0; font-size: 13px;"><strong>Delivery Address:</strong> ${order.shippingAddress.street}, ${order.shippingAddress.city}, ${order.shippingAddress.state} - ${order.shippingAddress.pincode}</p>
+        <p style="margin: 6px 0; font-size: 13px;"><strong>Address:</strong> ${order.shippingAddress.street}, ${order.shippingAddress.city}, ${order.shippingAddress.state} - ${order.shippingAddress.pincode}</p>
       </div>
-
       <div style="background-color: #FFFFFF; padding: 20px; border-radius: 4px; border: 1px dashed #D4B896; margin: 20px 0;">
         <h3 style="margin-top: 0; color: #6B2D0E;">Ordered Products</h3>
-        <ul style="font-size: 13px; padding-left: 20px; margin: 10px 0;">
-          ${itemsHtml}
-        </ul>
-        <p style="margin: 12px 0 0 0; font-size: 14px; border-top: 1px solid #FAF8F5; padding-top: 8px;"><strong>Total Amount Paid:</strong> ₹${order.total.toLocaleString()} (Goods: ₹${order.subtotal.toLocaleString()}, Delivery: ₹${order.shippingCharge.toLocaleString()})</p>
+        <ul style="font-size: 13px; padding-left: 20px; margin: 10px 0;">${itemsHtml}</ul>
+        <p style="margin: 12px 0 0 0; font-size: 14px;"><strong>Total Paid:</strong> ₹${order.total.toLocaleString()}</p>
       </div>
-
-      <div style="background-color: #F9F9F9; padding: 15px; border-radius: 4px; border: 1px solid #E2D1BE; margin: 20px 0; font-size: 12px;">
-        <p style="margin: 4px 0;"><strong>Razorpay Payment ID:</strong> ${order.razorpayPaymentId || 'N/A'}</p>
-        <p style="margin: 4px 0;"><strong>Payment Status:</strong> ${order.paymentStatus || 'PAID'}</p>
-        <p style="margin: 4px 0;"><strong>Order Date & Time:</strong> ${new Date(order.createdAt).toLocaleString('en-US', { timeZone: 'UTC' })}</p>
-      </div>
-
-      <p style="font-size: 13px; text-align: center; color: #777; margin-top: 30px;">Log in to the Godhara Admin Console to print the shipping label and coordinate dispatch.</p>
+      <p style="font-size: 13px; text-align: center; color: #777; margin-top: 30px;">Log in to the Admin Console to dispatch the order.</p>
     </div>
   `;
 
