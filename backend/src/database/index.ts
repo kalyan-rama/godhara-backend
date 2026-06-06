@@ -37,9 +37,9 @@ export let isPostgresConnected = false;
 let _settingsCache: { data: any; ts: number } | null = null;
 let _categoriesCache: { data: any[]; ts: number } | null = null;
 let _productsCache: { data: any[]; ts: number } | null = null;
-const SETTINGS_TTL_MS   = 60_000;   // 60 s
-const CATEGORIES_TTL_MS = 120_000;  // 2 min
-const PRODUCTS_TTL_MS   = 30_000;   // 30 s
+const SETTINGS_TTL_MS   = 600_000;  // 10 min
+const CATEGORIES_TTL_MS = 600_000;  // 10 min
+const PRODUCTS_TTL_MS   = 300_000;  // 5 min
 
 export function invalidateSettingsCache()   { _settingsCache   = null; }
 export function invalidateCategoriesCache() { _categoriesCache = null; }
@@ -269,21 +269,20 @@ export async function loadFromPostgres() {
   if (!isPostgresConnected) return data;
 
   const t0 = Date.now();
-  let client;
   try {
-    client = await pool.connect();
-
+    // Fix: pool.query() gives each query its own connection from the pool,
+    // preventing DeprecationWarning: "client.query() called while another query is running."
     const [rCats, rSettings, rUsers, rProds, rOrders, rCarts, rCoupons, rActivity, rEV, rPR] = await Promise.all([
-      client.query('SELECT * FROM categories'),
-      client.query('SELECT * FROM settings WHERE id = $1', ['global']),
-      client.query('SELECT * FROM users'),
-      client.query('SELECT * FROM products'),
-      client.query('SELECT * FROM orders'),
-      client.query('SELECT * FROM carts'),
-      client.query('SELECT * FROM coupons'),
-      client.query('SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 1000'),
-      client.query('SELECT * FROM email_verifications'),
-      client.query('SELECT * FROM password_resets'),
+      pool.query('SELECT * FROM categories'),
+      pool.query('SELECT * FROM settings WHERE id = $1', ['global']),
+      pool.query('SELECT * FROM users'),
+      pool.query('SELECT * FROM products'),
+      pool.query('SELECT * FROM orders'),
+      pool.query('SELECT * FROM carts'),
+      pool.query('SELECT * FROM coupons'),
+      pool.query('SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 1000'),
+      pool.query('SELECT * FROM email_verifications'),
+      pool.query('SELECT * FROM password_resets'),
     ]);
 
     data.categories = rCats.rows.map((r: any) => r.name);
@@ -311,8 +310,6 @@ export async function loadFromPostgres() {
 
   } catch (err) {
     console.error("[PostgreSQL] loadFromPostgres error:", err);
-  } finally {
-    if (client) client.release();
   }
   logQueryTime('[loadFromPostgres]', t0);
   return data;
@@ -711,8 +708,17 @@ export const dbInitializationPromise = startupInit();
 
 // ── TASK 4: reloadCache — ONLY called at startup/scheduled cron ──
 // NEVER called inside request handlers.
-export async function reloadCache() {
-  if (isPostgresConnected) {
+// Single-flight lock: prevents concurrent reloads from piling up.
+let _reloadInFlight: Promise<void> | null = null;
+
+export function reloadCache(): Promise<void> {
+  if (_reloadInFlight) {
+    console.log('[reloadCache] Already in-flight — returning existing promise (single-flight)');
+    return _reloadInFlight;
+  }
+
+  _reloadInFlight = (async () => {
+    if (!isPostgresConnected) return;
     const t0 = Date.now();
     try {
       cache = await loadFromPostgres();
@@ -723,8 +729,12 @@ export async function reloadCache() {
       logQueryTime('[reloadCache]', t0);
     } catch (err) {
       console.error("[PostgreSQL] reloadCache error:", err);
+    } finally {
+      _reloadInFlight = null;
     }
-  }
+  })();
+
+  return _reloadInFlight;
 }
 
 // ── In-memory read ───────────────────────────────────────────
