@@ -8,7 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/index.js';
-import { dbInitializationPromise, reloadCache, getPendingFlushPromise } from './database/index.js';
+import { dbInitializationPromise, reloadCache } from './database/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,52 +66,55 @@ async function startServer() {
   }));
 
   // ============================================================
-  // PERFORMANCE: Only await DB init, skip cache reload on AUTH routes
-  // Auth endpoints (login/register/OTP) do NOT need a full cache reload
-  // — they operate directly on dbObj methods which are always up-to-date.
+  // PERFORMANCE FIX: Auth routes skip reloadCache entirely.
+  // reloadCache() (full DB round-trip) was the cause of 25+ second
+  // OTP/login latency. Auth endpoints operate directly on dbObj
+  // which always has up-to-date in-memory state — no cache refresh needed.
+  //
+  // REMOVED: getPendingFlushPromise() response interception.
+  // That hook was blocking res.json() until the full flushToPostgres()
+  // completed (~10-25 seconds), meaning users waited for the entire DB
+  // bulk-sync before seeing any response. Writes now happen in background.
   // ============================================================
   const AUTH_PATHS = [
-    '/api/auth/login',
-    '/api/auth/register',
-    '/api/auth/admin-otp-verify',
-    '/api/auth/verify-otp',
-    '/api/auth/send-otp',
-    '/api/auth/forgot-password',
-    '/api/auth/reset-password',
-    '/api/auth/refresh-token',
-    '/api/auth/google',
-    '/api/auth/logout',
+    '/auth/login',
+    '/auth/register',
+    '/auth/admin-otp-verify',
+    '/auth/verify-otp',
+    '/auth/send-otp',
+    '/auth/forgot-password',
+    '/auth/reset-password',
+    '/auth/refresh-token',
+    '/auth/google',
+    '/auth/logout',
+  ];
+
+  // Routes that serve product/order data to customers — these benefit from a fresh cache
+  const CACHE_REFRESH_PATHS = [
+    '/products',
+    '/orders',
+    '/cart',
+    '/categories',
+    '/settings',
   ];
 
   app.use(async (req, res, next) => {
     try {
       await dbInitializationPromise;
 
-      const isAuthPath = AUTH_PATHS.some(p => req.path.startsWith(p.replace('/api', '')));
-      const needsCache = !isAuthPath && (req.method === 'GET' || req.path.includes('/products') || req.path.includes('/orders'));
+      const isAuthPath = AUTH_PATHS.some(p => req.path.startsWith(p));
+      const isCacheRefreshPath = CACHE_REFRESH_PATHS.some(p => req.path.includes(p));
+      const needsCache = !isAuthPath && req.method === 'GET' && isCacheRefreshPath;
 
-      // Only reload cache for non-auth read paths
+      // Only reload cache for non-auth data read paths
       if (needsCache) {
         await reloadCache();
       }
 
-      // Intercept response to flush DB before sending
-      const originalJson = res.json.bind(res);
-      const originalSend = res.send.bind(res);
-
-      res.json = function (body: any) {
-        getPendingFlushPromise()
-          .then(() => originalJson(body))
-          .catch(() => originalJson(body));
-        return res;
-      };
-
-      res.send = function (body: any) {
-        getPendingFlushPromise()
-          .then(() => originalSend(body))
-          .catch(() => originalSend(body));
-        return res;
-      };
+      // NOTE: We do NOT intercept res.json/res.send with getPendingFlushPromise().
+      // Writes (createUser, updateUser, etc.) flush to PostgreSQL in the background
+      // via writeData(). The response is returned immediately after the in-memory
+      // cache update — no blocking on DB sync.
 
       next();
     } catch (err: any) {
@@ -120,22 +123,46 @@ async function startServer() {
     }
   });
 
-  // Request timing middleware (dev + production — helps spot bottlenecks)
+  // ============================================================
+  // PERFORMANCE LOGGING — tracks all endpoints with detailed timing
+  // ============================================================
   app.use((req, res, next) => {
     const start = Date.now();
+    const dbQueryStart = Date.now(); // approximation — real DB timing is inside routes
+
     res.on('finish', () => {
-      const ms = Date.now() - start;
+      const totalMs = Date.now() - start;
       const route = req.originalUrl;
-      const isSlowAuth = (
+      const method = req.method;
+      const status = res.statusCode;
+
+      const isAuthRoute =
         route.includes('/auth/login') ||
         route.includes('/auth/register') ||
         route.includes('/auth/otp') ||
-        route.includes('/auth/admin-otp')
-      );
-      if (isSlowAuth && ms > 1500) {
-        console.warn(`⚠️  [PERF SLOW] ${req.method} ${route} → ${ms}ms (threshold: 1500ms)`);
-      } else if (isSlowAuth) {
-        console.log(`⏱️  [PERF] ${req.method} ${route} → ${ms}ms`);
+        route.includes('/auth/admin-otp') ||
+        route.includes('/auth/verify') ||
+        route.includes('/auth/refresh');
+
+      const isProductRoute = route.includes('/products');
+      const isCartRoute = route.includes('/cart');
+
+      // Auth route targets: login < 1000ms, register < 1500ms, OTP < 1000ms
+      if (isAuthRoute) {
+        const threshold = route.includes('/register') && !route.includes('/verify') ? 1500 : 1000;
+        if (totalMs > threshold) {
+          console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms (target: <${threshold}ms) [status: ${status}]`);
+        } else {
+          console.log(`✅ [PERF AUTH] ${method} ${route} → ${totalMs}ms [status: ${status}]`);
+        }
+      } else if (isProductRoute || isCartRoute) {
+        if (totalMs > 2000) {
+          console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms (threshold: 2000ms) [status: ${status}]`);
+        } else {
+          console.log(`⏱️  [PERF DATA] ${method} ${route} → ${totalMs}ms [status: ${status}]`);
+        }
+      } else if (totalMs > 3000) {
+        console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms [status: ${status}]`);
       }
     });
     next();
