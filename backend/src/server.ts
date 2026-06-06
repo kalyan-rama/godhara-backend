@@ -17,7 +17,7 @@ async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-  // Trust first proxy (Render/Vercel proxy headers)
+  // Trust first proxy (Render/Railway proxy headers)
   app.set('trust proxy', 1);
 
   // CORS — allow Vercel frontend and localhost dev
@@ -28,18 +28,15 @@ async function startServer() {
     'http://localhost:3000',
     'http://127.0.0.1:5173',
   ];
-  // Also support any FRONTEND_URL env var set in Render dashboard
   if (process.env.FRONTEND_URL) {
     allowedOrigins.push(process.env.FRONTEND_URL);
   }
 
   app.use(cors({
     origin: (origin, callback) => {
-      // Allow server-to-server (no origin) and all allowed origins
       if (!origin || allowedOrigins.includes(origin) || origin.includes('vercel.app') || origin.includes('localhost')) {
         callback(null, true);
       } else {
-        // In production, still allow but log unknown origins
         console.warn(`[CORS] Unknown origin allowed: ${origin}`);
         callback(null, true);
       }
@@ -53,7 +50,7 @@ async function startServer() {
   app.use(express.json({ limit: '20mb' }));
   app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-  // Session configuration — secure cookies for production
+  // Session configuration
   const isProduction = process.env.NODE_ENV === 'production';
   app.use(session({
     secret: process.env.SESSION_SECRET || 'godhara-secret-session-key-2026-change-in-prod',
@@ -64,17 +61,37 @@ async function startServer() {
       secure: isProduction,
       httpOnly: true,
       sameSite: isProduction ? 'none' : 'lax',
-      maxAge: 2 * 60 * 60 * 1000, // 2 hours
+      maxAge: 2 * 60 * 60 * 1000,
     },
   }));
 
-  // DB init middleware — wait for DB before handling traffic
+  // ============================================================
+  // PERFORMANCE: Only await DB init, skip cache reload on AUTH routes
+  // Auth endpoints (login/register/OTP) do NOT need a full cache reload
+  // — they operate directly on dbObj methods which are always up-to-date.
+  // ============================================================
+  const AUTH_PATHS = [
+    '/api/auth/login',
+    '/api/auth/register',
+    '/api/auth/admin-otp-verify',
+    '/api/auth/verify-otp',
+    '/api/auth/send-otp',
+    '/api/auth/forgot-password',
+    '/api/auth/reset-password',
+    '/api/auth/refresh-token',
+    '/api/auth/google',
+    '/api/auth/logout',
+  ];
+
   app.use(async (req, res, next) => {
     try {
       await dbInitializationPromise;
 
-      // Reload cache for read paths
-      if (req.method === 'GET' || req.path.includes('/products') || req.path.includes('/orders')) {
+      const isAuthPath = AUTH_PATHS.some(p => req.path.startsWith(p.replace('/api', '')));
+      const needsCache = !isAuthPath && (req.method === 'GET' || req.path.includes('/products') || req.path.includes('/orders'));
+
+      // Only reload cache for non-auth read paths
+      if (needsCache) {
         await reloadCache();
       }
 
@@ -103,10 +120,31 @@ async function startServer() {
     }
   });
 
+  // Request timing middleware (dev + production — helps spot bottlenecks)
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const ms = Date.now() - start;
+      const route = req.originalUrl;
+      const isSlowAuth = (
+        route.includes('/auth/login') ||
+        route.includes('/auth/register') ||
+        route.includes('/auth/otp') ||
+        route.includes('/auth/admin-otp')
+      );
+      if (isSlowAuth && ms > 1500) {
+        console.warn(`⚠️  [PERF SLOW] ${req.method} ${route} → ${ms}ms (threshold: 1500ms)`);
+      } else if (isSlowAuth) {
+        console.log(`⏱️  [PERF] ${req.method} ${route} → ${ms}ms`);
+      }
+    });
+    next();
+  });
+
   // API routes
   app.use('/api', apiRouter);
 
-  // Serve static assets (logo, etc.)
+  // Static assets
   app.use('/assets', (req, res, next) => {
     const pathsToTry = [
       path.join(process.cwd(), 'assets', req.path),
@@ -120,37 +158,33 @@ async function startServer() {
     next();
   });
 
-  // Serve public folder (logo.png etc.)
   const publicDir = path.join(process.cwd(), 'public');
   if (fs.existsSync(publicDir)) {
     app.use(express.static(publicDir));
   }
 
-  // Production: serve built frontend from dist/
-// Production: backend only
-if (isProduction) {
-  console.log('🚀 Backend API mode');
-} else {
-  // Dev: Vite middleware
-  try {
-    const { createServer: createViteServer } = await import('vite');
-
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-
-    app.use(vite.middlewares);
-    console.log('⚡ Vite dev middleware active');
-  } catch (err: any) {
-    console.warn('[Vite] Could not start dev middleware:', err?.message);
+  if (isProduction) {
+    console.log('🚀 Backend API mode (production)');
+  } else {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+      console.log('⚡ Vite dev middleware active');
+    } catch (err: any) {
+      console.warn('[Vite] Could not start dev middleware:', err?.message);
+    }
   }
-}
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Godhara server running at http://localhost:${PORT}`);
     console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? '✅ Configured' : '⚠️  Not configured (set CLOUDINARY_CLOUD_NAME)'}`);
+    console.log(`   FROM_EMAIL: ${process.env.FROM_EMAIL || '⚠️  Not set — using noreply@nexakite.shop'}`);
+    console.log(`   RESEND_API_KEY: ${process.env.RESEND_API_KEY ? '✅ Configured' : '⚠️  Not set — emails will be simulated'}`);
+    console.log(`   Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? '✅ Configured' : '⚠️  Not configured'}`);
   });
 }
 
