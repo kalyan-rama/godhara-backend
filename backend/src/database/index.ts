@@ -178,6 +178,27 @@ export async function ensureSchema() {
       ALTER TABLE products ADD COLUMN IF NOT EXISTS "imagePublicIds" JSONB DEFAULT '[]'::jsonb;
     `).catch(() => {});
 
+    // Fix: Add delivery charge columns to settings if missing on existing databases.
+    // These columns were added in a schema update; existing DBs may not have them.
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "deliveryChargeTelangana" NUMERIC DEFAULT 70;
+    `).catch(() => {});
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "deliveryChargeAP" NUMERIC DEFAULT 80;
+    `).catch(() => {});
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "deliveryChargeOther" NUMERIC DEFAULT 100;
+    `).catch(() => {});
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "freeDeliveryPincodes" TEXT DEFAULT '[]';
+    `).catch(() => {});
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "storeLocations" TEXT DEFAULT '[]';
+    `).catch(() => {});
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS "storeServicePincodes" TEXT DEFAULT '[]';
+    `).catch(() => {});
+
     console.log("[PostgreSQL] Schema verification successful");
   } catch (err) {
     console.error("[PostgreSQL] Error ensuring table schemas:", err);
@@ -257,7 +278,7 @@ export async function loadFromPostgres() {
         founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
         founderName: 'Kalyan V., Founder of Godhara',
         founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
-        contactEmail: 'kalyanvasantham906@gmail.com',
+        contactEmail: 'godhara.2026@gmail.com',
         address: 'Pocharam Apartment, Banswada, Telangana 503187',
         phone: '+91 8978038932',
         freeShippingThreshold: 1000,
@@ -693,7 +714,7 @@ async function startupInit() {
             {
               id: 'admin-1',
               name: 'Godhara Admin',
-              email: 'kalyanvasantham906@gmail.com',
+              email: 'godhara.2026@gmail.com',
               passwordHash: '$2b$10$HLXZBH8Est4SUosKQiX1/uEZPuhj/hiZ4bFkZdgu7ZPPI.Z7E2h4W', // hashed "admin123"
               role: 'ADMIN',
               phone: '+91 8978038932',
@@ -844,7 +865,7 @@ async function startupInit() {
             founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
             founderName: 'Kalyan V., Founder of Godhara',
             founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
-            contactEmail: 'kalyanvasantham906@gmail.com',
+            contactEmail: 'godhara.2026@gmail.com',
             address: 'Pocharam Apartment, Banswada, Telangana 503187',
             phone: '+91 8978038932',
             freeShippingThreshold: 1000,
@@ -879,7 +900,7 @@ async function startupInit() {
             {
               id: 'admin-1',
               name: 'Godhara Admin',
-              email: 'kalyanvasantham906@gmail.com',
+              email: 'godhara.2026@gmail.com',
               passwordHash: '$2b$10$HLXZBH8Est4SUosKQiX1/uEZPuhj/hiZ4bFkZdgu7ZPPI.Z7E2h4W', // hashed "admin123"
               role: 'ADMIN',
               phone: '+91 8978038932',
@@ -1030,7 +1051,7 @@ async function startupInit() {
             founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
             founderName: 'Kalyan V., Founder of Godhara',
             founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
-            contactEmail: 'kalyanvasantham906@gmail.com',
+            contactEmail: 'godhara.2026@gmail.com',
             address: 'Pocharam Apartment, Banswada, Telangana 503187',
             phone: '+91 8978038932',
             freeShippingThreshold: 1000,
@@ -1063,12 +1084,12 @@ async function startupInit() {
 // Export a background database initialization promise to comply with standard ES/CommonJS bundling modules without top-level block limits
 export const dbInitializationPromise = startupInit();
 
-// Define a pending flush promise tracker to avoid premature freeze in serverless environments (like Vercel)
-let pendingFlushPromise: Promise<void> = Promise.resolve();
-
-export function getPendingFlushPromise(): Promise<void> {
-  return pendingFlushPromise;
-}
+// ============================================================
+// PERFORMANCE FIX: writeData is fully fire-and-forget.
+// The in-memory cache is updated synchronously and immediately.
+// The PostgreSQL flush runs in the background and NEVER blocks
+// the HTTP response. This eliminates the 25+ second OTP delay.
+// ============================================================
 
 export async function reloadCache() {
   if (isPostgresConnected) {
@@ -1089,26 +1110,23 @@ function readData() {
 }
 
 function writeData(data: any) {
+  // Update in-memory cache synchronously — instant, zero I/O cost
   cache = data;
+
   if (isPostgresConnected) {
-    // Trigger background async db sink and store in the tracker
-    pendingFlushPromise = flushToPostgres(data)
-      .then(() => {
-        // console.log("[PostgreSQL] Database synchronized.");
-      })
-      .catch((err) => {
-        console.error("[PostgreSQL] Failed flushing state update:", err);
-        throw err;
-      });
+    // Fire-and-forget: flush to PostgreSQL in the background.
+    // HTTP response is returned immediately; the cache is already updated
+    // so all subsequent reads see the new state without waiting for DB sync.
+    flushToPostgres(data).catch((err) => {
+      console.error("[PostgreSQL] Background flush failed:", err);
+    });
   } else {
     // Flush to local JSON fallback database
     const dbJsonPath = path.join(process.cwd(), 'data', 'db.json');
     try {
       fs.writeFileSync(dbJsonPath, JSON.stringify(data, null, 2), 'utf8');
-      pendingFlushPromise = Promise.resolve();
     } catch (err) {
       console.error("[Database_Fallback] Failed syncing cache update to data/db.json:", err);
-      pendingFlushPromise = Promise.reject(err);
     }
   }
 }
