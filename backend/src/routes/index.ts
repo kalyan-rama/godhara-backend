@@ -79,7 +79,7 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
         return res.status(401).json({ message: 'Invalid or expired signature', error: err.message });
       }
       
- req.user = {
+req.user = {
   id: userPayload.id,
   email: userPayload.email,
   role: userPayload.role,
@@ -88,7 +88,6 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
 
 console.log('[Auth Decision Log] JWT Verification success. User:', req.user);
 
-// Auto-propagate back to session for durability
 if (req.session) {
   (req.session as any).user = {
     id: req.user.id,
@@ -97,9 +96,6 @@ if (req.session) {
     otpVerified: req.user.otpVerified
   };
 }
-
-// Removed unnecessary cart preload
-// dbObj.getCart(req.user!.id);
 
 return next();
 
