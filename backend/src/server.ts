@@ -8,19 +8,18 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/index.js';
-import { dbInitializationPromise, reloadCache } from './database/index.js';
+import { dbInitializationPromise, pool, isPostgresConnected, reloadCache } from './database/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
 async function startServer() {
-  const app = express();
+  const app  = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-  // Trust first proxy (Render/Railway proxy headers)
   app.set('trust proxy', 1);
 
-  // CORS — allow Vercel frontend and localhost dev
+  // ── CORS ────────────────────────────────────────────────────
   const allowedOrigins = [
     'https://godhara-fronted.vercel.app',
     'https://godhara-frontend.vercel.app',
@@ -28,31 +27,62 @@ async function startServer() {
     'http://localhost:3000',
     'http://127.0.0.1:5173',
   ];
-  if (process.env.FRONTEND_URL) {
-    allowedOrigins.push(process.env.FRONTEND_URL);
-  }
+  if (process.env.FRONTEND_URL) allowedOrigins.push(process.env.FRONTEND_URL);
 
   app.use(cors({
-    origin: (origin, callback) => {
+    origin: (origin, cb) => {
       if (!origin || allowedOrigins.includes(origin) || origin.includes('vercel.app') || origin.includes('localhost')) {
-        callback(null, true);
+        cb(null, true);
       } else {
-        console.warn(`[CORS] Unknown origin allowed: ${origin}`);
-        callback(null, true);
+        console.warn(`[CORS] Allowing unknown origin: ${origin}`);
+        cb(null, true);
       }
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
   }));
 
-  // Body parsing
   app.use(express.json({ limit: '20mb' }));
   app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-  // Session configuration
+  // ── TASK 9: Session store — PostgreSQL via connect-pg-simple ─
+  // Falls back to memory store when DB is not available.
   const isProduction = process.env.NODE_ENV === 'production';
+  let sessionStore: any = undefined;
+
+  await dbInitializationPromise; // ensure DB is ready before configuring session store
+
+  if (isPostgresConnected) {
+    try {
+      // Dynamic import so the server still boots if package is missing
+      const connectPgSimple = (await import('connect-pg-simple')).default;
+      const PgStore = connectPgSimple(session);
+      // Ensure the session table exists
+      const client = await pool.connect();
+      try {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS "session" (
+            "sid"    VARCHAR NOT NULL COLLATE "default",
+            "sess"   JSON NOT NULL,
+            "expire" TIMESTAMP(6) NOT NULL,
+            CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+          );
+          CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+        `);
+      } finally { client.release(); }
+
+      sessionStore = new PgStore({ pool, tableName: 'session', createTableIfMissing: false });
+      console.log('✅ [Session] PostgreSQL session store active (connect-pg-simple)');
+    } catch (err: any) {
+      console.warn(`⚠️  [Session] connect-pg-simple unavailable (${err.message}). Using MemoryStore — add connect-pg-simple to dependencies for production.`);
+    }
+  } else {
+    console.warn('⚠️  [Session] No DB connection — using MemoryStore (acceptable for local dev only)');
+  }
+
   app.use(session({
+    store: sessionStore,
     secret: process.env.SESSION_SECRET || 'godhara-secret-session-key-2026-change-in-prod',
     resave: false,
     saveUninitialized: false,
@@ -65,57 +95,12 @@ async function startServer() {
     },
   }));
 
-  // ============================================================
-  // PERFORMANCE FIX: Auth routes skip reloadCache entirely.
-  // reloadCache() (full DB round-trip) was the cause of 25+ second
-  // OTP/login latency. Auth endpoints operate directly on dbObj
-  // which always has up-to-date in-memory state — no cache refresh needed.
-  //
-  // REMOVED: getPendingFlushPromise() response interception.
-  // That hook was blocking res.json() until the full flushToPostgres()
-  // completed (~10-25 seconds), meaning users waited for the entire DB
-  // bulk-sync before seeing any response. Writes now happen in background.
-  // ============================================================
-  const AUTH_PATHS = [
-    '/auth/login',
-    '/auth/register',
-    '/auth/admin-otp-verify',
-    '/auth/verify-otp',
-    '/auth/send-otp',
-    '/auth/forgot-password',
-    '/auth/reset-password',
-    '/auth/refresh-token',
-    '/auth/google',
-    '/auth/logout',
-  ];
-
-  // Routes that serve product/order data to customers — these benefit from a fresh cache
-  const CACHE_REFRESH_PATHS = [
-    '/products',
-    '/orders',
-    '/cart',
-    '/categories',
-    '/settings',
-  ];
-
+  // ── TASK 3/4: DB init guard — NO reloadCache() in request path ──
+  // reloadCache() runs ONLY at startup (above) and in scheduled cron.
+  // Auth + data routes serve directly from in-memory cache.
   app.use(async (req, res, next) => {
     try {
       await dbInitializationPromise;
-
-      const isAuthPath = AUTH_PATHS.some(p => req.path.startsWith(p));
-      const isCacheRefreshPath = CACHE_REFRESH_PATHS.some(p => req.path.includes(p));
-      const needsCache = !isAuthPath && req.method === 'GET' && isCacheRefreshPath;
-
-      // Only reload cache for non-auth data read paths
-      if (needsCache) {
-        await reloadCache();
-      }
-
-      // NOTE: We do NOT intercept res.json/res.send with getPendingFlushPromise().
-      // Writes (createUser, updateUser, etc.) flush to PostgreSQL in the background
-      // via writeData(). The response is returned immediately after the in-memory
-      // cache update — no blocking on DB sync.
-
       next();
     } catch (err: any) {
       console.error('[DB Init Middleware Error]', err);
@@ -123,52 +108,52 @@ async function startServer() {
     }
   });
 
-  // ============================================================
-  // PERFORMANCE LOGGING — tracks all endpoints with detailed timing
-  // ============================================================
+  // ── TASK 6: Performance logging middleware ───────────────────
   app.use((req, res, next) => {
     const start = Date.now();
-    const dbQueryStart = Date.now(); // approximation — real DB timing is inside routes
 
     res.on('finish', () => {
       const totalMs = Date.now() - start;
-      const route = req.originalUrl;
-      const method = req.method;
-      const status = res.statusCode;
+      const route   = req.originalUrl;
+      const method  = req.method;
+      const status  = res.statusCode;
 
-      const isAuthRoute =
-        route.includes('/auth/login') ||
-        route.includes('/auth/register') ||
-        route.includes('/auth/otp') ||
-        route.includes('/auth/admin-otp') ||
-        route.includes('/auth/verify') ||
-        route.includes('/auth/refresh');
+      const isAuth    = route.includes('/auth/');
+      const isProduct = route.includes('/products');
+      const isCart    = route.includes('/cart');
+      const isOrder   = route.includes('/orders');
+      const isAdmin   = route.includes('/admin/');
 
-      const isProductRoute = route.includes('/products');
-      const isCartRoute = route.includes('/cart');
+      // Slow query warning threshold per endpoint type
+      let threshold = 3000;
+      if (isAuth)    threshold = route.includes('/register') && !route.includes('/verify') ? 1500 : 1000;
+      else if (isProduct || isCart) threshold = 200;
+      else if (isOrder)  threshold = 500;
+      else if (isAdmin)  threshold = 1000;
 
-      // Auth route targets: login < 1000ms, register < 1500ms, OTP < 1000ms
-      if (isAuthRoute) {
-        const threshold = route.includes('/register') && !route.includes('/verify') ? 1500 : 1000;
-        if (totalMs > threshold) {
-          console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms (target: <${threshold}ms) [status: ${status}]`);
-        } else {
-          console.log(`✅ [PERF AUTH] ${method} ${route} → ${totalMs}ms [status: ${status}]`);
-        }
-      } else if (isProductRoute || isCartRoute) {
-        if (totalMs > 2000) {
-          console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms (threshold: 2000ms) [status: ${status}]`);
-        } else {
-          console.log(`⏱️  [PERF DATA] ${method} ${route} → ${totalMs}ms [status: ${status}]`);
-        }
-      } else if (totalMs > 3000) {
-        console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms [status: ${status}]`);
+      if (totalMs > 500) {
+        console.warn(`⚠️  [PERF SLOW] ${method} ${route} → ${totalMs}ms (threshold: ${threshold}ms) [${status}]`);
+      } else {
+        console.log(`✅ [PERF] ${method} ${route} → ${totalMs}ms [${status}]`);
       }
     });
+
     next();
   });
 
-  // API routes
+  // ── TASK 4: Scheduled cache refresh (cron-style) ─────────────
+  // Reloads in-memory cache every 5 minutes from PostgreSQL.
+  // This is the ONLY place reloadCache() is called after startup.
+  setInterval(async () => {
+    try {
+      console.log('[Cron] Refreshing in-memory cache from PostgreSQL...');
+      await reloadCache();
+      console.log('[Cron] Cache refreshed ✅');
+    } catch (err) {
+      console.error('[Cron] Cache refresh failed:', err);
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+
   app.use('/api', apiRouter);
 
   // Static assets
@@ -177,28 +162,21 @@ async function startServer() {
       path.join(process.cwd(), 'assets', req.path),
       path.join(__dirname, '..', 'assets', req.path),
     ];
-    for (const filePath of pathsToTry) {
-      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-        return res.sendFile(filePath);
-      }
+    for (const p of pathsToTry) {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return res.sendFile(p);
     }
     next();
   });
 
   const publicDir = path.join(process.cwd(), 'public');
-  if (fs.existsSync(publicDir)) {
-    app.use(express.static(publicDir));
-  }
+  if (fs.existsSync(publicDir)) app.use(express.static(publicDir));
 
   if (isProduction) {
     console.log('🚀 Backend API mode (production)');
   } else {
     try {
       const { createServer: createViteServer } = await import('vite');
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: 'spa',
-      });
+      const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
       app.use(vite.middlewares);
       console.log('⚡ Vite dev middleware active');
     } catch (err: any) {
@@ -208,10 +186,11 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Godhara server running at http://localhost:${PORT}`);
-    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   FROM_EMAIL: ${process.env.FROM_EMAIL || '⚠️  Not set — using noreply@nexakite.shop'}`);
-    console.log(`   RESEND_API_KEY: ${process.env.RESEND_API_KEY ? '✅ Configured' : '⚠️  Not set — emails will be simulated'}`);
-    console.log(`   Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? '✅ Configured' : '⚠️  Not configured'}`);
+    console.log(`   Environment : ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   Session store: ${sessionStore ? 'PostgreSQL (connect-pg-simple)' : 'MemoryStore'}`);
+    console.log(`   FROM_EMAIL  : ${process.env.FROM_EMAIL || '⚠️  Not set'}`);
+    console.log(`   RESEND_KEY  : ${process.env.RESEND_API_KEY ? '✅' : '⚠️  Not set'}`);
+    console.log(`   Cloudinary  : ${process.env.CLOUDINARY_CLOUD_NAME ? '✅' : '⚠️  Not configured'}`);
   });
 }
 
