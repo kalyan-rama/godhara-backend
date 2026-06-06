@@ -23,7 +23,8 @@
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^8.0.9",
     "pdfkit": "^0.18.0",
-    "pg": "^8.21.0"
+    "pg": "^8.21.0",
+    "connect-pg-simple": "^9.0.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -38,7 +39,8 @@
     "@types/pg": "^8.20.0",
     "esbuild": "^0.25.0",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2"
+    "typescript": "~5.8.2",
+    "@types/connect-pg-simple": "^7.0.3"
   },
   "engines": {
     "node": ">=18.0.0"
