@@ -704,7 +704,7 @@ async function startupInit() {
             {
               id: 'admin-1',
               name: 'Godhara Admin',
-              email: 'kalyanvasantham906@gmail.com',
+              email: 'godhara.2026@gmail.com',
               passwordHash: '$2b$10$HLXZBH8Est4SUosKQiX1/uEZPuhj/hiZ4bFkZdgu7ZPPI.Z7E2h4W', // hashed "admin123"
               role: 'ADMIN',
               phone: '+91 8978038932',
@@ -855,7 +855,7 @@ async function startupInit() {
             founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
             founderName: 'Kalyan V., Founder of Godhara',
             founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
-            contactEmail: 'kalyanvasantham906@gmail.com',
+            contactEmail: 'godhara.2026@gmail.com',
             address: 'Pocharam Apartment, Banswada, Telangana 503187',
             phone: '+91 8978038932',
             freeShippingThreshold: 1000,
@@ -890,7 +890,7 @@ async function startupInit() {
             {
               id: 'admin-1',
               name: 'Godhara Admin',
-              email: 'kalyanvasantham906@gmail.com',
+              email: 'godhara.2026@gmail.com',
               passwordHash: '$2b$10$HLXZBH8Est4SUosKQiX1/uEZPuhj/hiZ4bFkZdgu7ZPPI.Z7E2h4W', // hashed "admin123"
               role: 'ADMIN',
               phone: '+91 8978038932',
@@ -1041,7 +1041,7 @@ async function startupInit() {
             founderImageUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=600',
             founderName: 'Kalyan V., Founder of Godhara',
             founderQuote: 'Godhara was founded with a simple yet powerful vision — to bring back the purity, wisdom, and sustainability of our Indian traditions. Inspired by our cultural roots and deep respect for nature, we work closely with local artisans and Gaushalas to create natural, eco-friendly products made using time-honored practices.',
-            contactEmail: 'kalyanvasantham906@gmail.com',
+            contactEmail: 'godhara.2026@gmail.com',
             address: 'Pocharam Apartment, Banswada, Telangana 503187',
             phone: '+91 8978038932',
             freeShippingThreshold: 1000,
