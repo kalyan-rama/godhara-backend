@@ -354,7 +354,7 @@ apiRouter.post('/auth/register/verify-otp', authRateLimiter, async (req, res) =>
     // Determine initial role
     const usersCount = dbObj.getUsers().length;
     let initialRole: 'SUPER_ADMIN' | 'CUSTOMER' = 'CUSTOMER';
-    if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'kalyanvasantham906@gmail.com')) {
+    if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'godhara.2026@gmail.com')) {
       initialRole = 'SUPER_ADMIN';
     }
 
@@ -956,7 +956,7 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
     } else {
       const usersCount = dbObj.getUsers().length;
       let initialRole = 'CUSTOMER';
-      if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'kalyanvasantham906@gmail.com')) {
+      if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'godhara.2026@gmail.com')) {
         initialRole = 'SUPER_ADMIN';
       }
 
@@ -1172,7 +1172,7 @@ apiRouter.post('/auth/google/token', authRateLimiter, async (req, res) => {
     } else {
       const usersCount = dbObj.getUsers().length;
       let initialRole = 'CUSTOMER';
-      if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'kalyanvasantham906@gmail.com')) {
+      if (usersCount === 0 || (usersCount === 1 && dbObj.getUsers()[0].email === 'godhara.2026@gmail.com')) {
         initialRole = 'SUPER_ADMIN';
       }
 
@@ -1927,7 +1927,9 @@ apiRouter.post('/payment/verify', authenticateToken, async (req: AuthRequest, re
 
         // Alert administrators immediately of new traditional purchase
         const settings = dbObj.getSettings();
+        console.log('SETTINGS CONTACT EMAIL:', settings.contactEmail);
         const adminEmail = settings.contactEmail || 'godhara.2026@gmail.com';
+        console.log('ADMIN EMAIL USED:', adminEmail);
         await sendAdminNewOrderNotificationEmail(newOrder, adminEmail);
 
       } catch (postErr: any) {
