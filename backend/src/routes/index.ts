@@ -1927,7 +1927,7 @@ apiRouter.post('/payment/verify', authenticateToken, async (req: AuthRequest, re
 
         // Alert administrators immediately of new traditional purchase
         const settings = dbObj.getSettings();
-        const adminEmail = settings.contactEmail || 'kalyanvasantham906@gmail.com';
+        const adminEmail = settings.contactEmail || 'godhara.2026@gmail.com';
         await sendAdminNewOrderNotificationEmail(newOrder, adminEmail);
 
       } catch (postErr: any) {
