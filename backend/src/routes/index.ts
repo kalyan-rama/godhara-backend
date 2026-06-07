@@ -1926,11 +1926,10 @@ apiRouter.post('/payment/verify', authenticateToken, async (req: AuthRequest, re
         await sendOrderConfirmationEmail(newOrder, invoicePath);
 
         // Alert administrators immediately of new traditional purchase
-        const settings = dbObj.getSettings();
-        console.log('SETTINGS CONTACT EMAIL:', settings.contactEmail);
-        const adminEmail = settings.contactEmail || 'godhara.2026@gmail.com';
-        console.log('ADMIN EMAIL USED:', adminEmail);
-        await sendAdminNewOrderNotificationEmail(newOrder, adminEmail);
+     const settings = dbObj.getSettings();
+console.log('SETTINGS CONTACT EMAIL:', settings.contactEmail);
+const adminEmail = settings.contactEmail || 'godhara.2026@gmail.com';
+console.log('ADMIN EMAIL USED:', adminEmail);
 
       } catch (postErr: any) {
         console.error('Failure inside post-payment execution block:', postErr.message);
