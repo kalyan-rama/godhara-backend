@@ -1082,27 +1082,56 @@ export function getPendingFlushPromise(): Promise<void> {
 }
 
 
-// ─── FAST CART UPSERT — writes only the cart row, no full DB flush ─────────────
-async function pgUpsertCart(userId: string, cartId: string, items: any[], updatedAt: string): Promise<void> {
+// ─── DEBOUNCED CART UPSERT ────────────────────────────────────────────────────
+// Batches rapid cart updates (add/remove/qty changes) into a single Neon write.
+// Timer resets on each call — only fires after 300ms of inactivity per user.
+// This turns 10 rapid clicks (10 × 222ms) into 1 write (222ms total).
+
+const cartDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const cartPendingWrites  = new Map<string, { cartId: string; items: any[]; updatedAt: string }>();
+
+function pgUpsertCart(userId: string, cartId: string, items: any[], updatedAt: string): void {
   if (!isPostgresConnected) return;
-  let client;
-  const start = Date.now();
-  try {
-    client = await pool.connect();
-    await client.query(
-      `INSERT INTO carts (id, "userId", items, "updatedAt")
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT ("userId") DO UPDATE SET
-         items = EXCLUDED.items,
-         "updatedAt" = EXCLUDED."updatedAt"`,
-      [cartId, userId, JSON.stringify(items), updatedAt]
-    );
-    console.log(`⏱️  [QUERY] [pgUpsertCart] → ${Date.now() - start}ms`);
-  } catch (err: any) {
-    console.error('[pgUpsertCart] Failed:', err.message);
-  } finally {
-    if (client) client.release();
-  }
+
+  // Always store the latest state — timer will flush it
+  cartPendingWrites.set(userId, { cartId, items, updatedAt });
+
+  // Clear any existing timer for this user
+  const existing = cartDebounceTimers.get(userId);
+  if (existing) clearTimeout(existing);
+
+  // Schedule a single flush after 300ms quiet period
+  const timer = setTimeout(async () => {
+    cartDebounceTimers.delete(userId);
+    const pending = cartPendingWrites.get(userId);
+    if (!pending) return;
+    cartPendingWrites.delete(userId);
+
+    let client;
+    const start = Date.now();
+    try {
+      client = await pool.connect();
+      await client.query(
+        `INSERT INTO carts (id, "userId", items, "updatedAt")
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT ("userId") DO UPDATE SET
+           items = EXCLUDED.items,
+           "updatedAt" = EXCLUDED."updatedAt"`,
+        [pending.cartId, userId, JSON.stringify(pending.items), pending.updatedAt]
+      );
+      const ms = Date.now() - start;
+      if (ms > 500) {
+        console.warn(`⚠️  [SLOW QUERY] [pgUpsertCart] → ${ms}ms`);
+      }
+      // Suppress sub-500ms cart logs — no noise in normal operation
+    } catch (err: any) {
+      console.error('[pgUpsertCart] Failed:', err.message);
+    } finally {
+      if (client) client.release();
+    }
+  }, 300);
+
+  cartDebounceTimers.set(userId, timer);
 }
 
 export async function reloadCache() {
